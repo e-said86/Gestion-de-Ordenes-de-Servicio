@@ -222,7 +222,7 @@ with st.sidebar:
     # Por defecto: desde el primer día del mes anteúltimo al último mes
     # disponible en el archivo, hasta la fecha más actual disponible.
     ultimo_mes = pd.Timestamp(max_date).replace(day=1)
-    mes_anteultimo = (ultimo_mes - pd.DateOffset(months=2)).date()
+    mes_anteultimo = (ultimo_mes - pd.DateOffset(months=1)).date()
     desde_default = max(min_date, mes_anteultimo)
 
     fecha_desde = st.date_input(
