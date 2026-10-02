@@ -1331,8 +1331,8 @@ def generar_pdf_informe(export_desde=None, export_hasta=None):
     # ---------------------------------------------------------
     # 5. Proyección y escenarios
     # ---------------------------------------------------------
-    q_pdf = int(q) if "q" in globals() else 5
-    prod_pdf = int(prod) if "prod" in globals() else 5
+    q_pdf = int(st.session_state.get("pq", 5))
+    prod_pdf = int(st.session_state.get("pp", 5))
     dias_trabajo_pdf = int(dias_trabajo_semana) if "dias_trabajo_semana" in globals() else 6
     capacidad_pdf = q_pdf * prod_pdf
     saldo_pdf = capacidad_pdf - ingreso_prom_calendario
