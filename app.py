@@ -16,9 +16,11 @@ st.set_page_config(
 CASOS = [
     "INSTALACION",
     "INSTALACION TV",
+    "INSTALACION EXPRESS DE TV (SMART+)",
     "TRASLADO DE SERVICIO",
     "CLIENTE SIN SERVICIO",
     "CAMBIO DE PLAN",
+    "RETIRO DE EQUIPOS POR MORA",
     "OS POR REPARACIONES/INTERNAS",
 ]
 
@@ -134,11 +136,13 @@ if uploaded is None:
 
 **Casos considerados:**
 - INSTALACION
-- INSTALACION TV
+- INST TV
+- INST EXPRESS DE TV (SMART+)
 - TRASLADO DE SERVICIO
 - CLIENTE SIN SERVICIO
 - CAMBIO DE PLAN
-- OS POR REPARACIONES/INTERNAS (identificado desde Tipo de OS)
+- RETIRO POR MORA
+- REPARACIONES/INTERNAS
 
 **Estados:**
 - Realizado = CERRADA
@@ -214,8 +218,8 @@ if valid_dates.empty:
 min_date = valid_dates.min().date()
 max_date = valid_dates.max().date()
 
-sucs = sorted([str(x) for x in df["_sucursal"].unique() if str(x) not in ["", "nan", "NAN", "None"]])
-default_suc = "CONCORDIA" if "CONCORDIA" in sucs else sucs[0]
+sucs = sorted([str(x) for x in df["_sucursal"].unique() if str(x) not in ["", "nan", "NAN", "None"]] )
+default_suc = [s for s in ["CONCORDIA", "REGIONAL"] if s in sucs]
 
 with st.sidebar:
     st.header("📅 Período analizado")
@@ -246,7 +250,7 @@ with st.sidebar:
     sucursal = st.multiselect(
         "Sucursal",
         sucs,
-        default=[default_suc] if default_suc in sucs else sucs
+        default=[s for s in ["CONCORDIA", "REGIONAL"] if s in sucs]
     )
 
     casos = st.multiselect(
@@ -303,7 +307,7 @@ if col["fecha_cierre"]:
     cierres_periodo = base[
         (base["_fecha_cierre"].notna()) &
         (base["_fecha_cierre"] >= start) &
-        (base["_fecha_cierre"] <= end) &
+        (base["_fecha_cierre"] < end_exclusive) &
         (base["_estado"].isin(REALIZADO))
     ].copy()
 else:
@@ -326,7 +330,8 @@ tabs = st.tabs([
     "👷‍♂️ Productividad",
     "📈 Proyección día a día",
     "📥 Exportar",
-    
+    "🗓️ Esquema de horas extras por período",
+    "📊 Análisis de horas extras realizadas",
 ])
 
 # ============================================================
@@ -2104,3 +2109,1518 @@ with tabs[6]:
     except Exception as e:
         st.error(f"No se pudo generar el PDF: {e}")
 
+
+
+# ============================================================
+# TAB 8 - ESQUEMA DE HORAS EXTRAS POR PERÍODO
+# ============================================================
+with tabs[7]:
+    st.subheader("🗓️ Esquema de horas extras")
+    st.write(
+        "Elegí el período, la cantidad de cuadrillas disponibles y la necesidad diaria. "
+        "La aplicación distribuye automáticamente las convocatorias y arma el calendario."
+    )
+
+    tipo_he_periodo = st.radio(
+        "Período a planificar",
+        ["Mes", "Semana", "Período personalizado"],
+        horizontal=True,
+        key="he_tipo_periodo"
+    )
+
+    fecha_ref_he = st.date_input(
+        "Fecha de referencia",
+        value=date.today(),
+        key="he_fecha_referencia"
+    )
+
+    if tipo_he_periodo == "Mes":
+        he_desde = fecha_ref_he.replace(day=1)
+        siguiente_mes_he = (pd.Timestamp(he_desde) + pd.offsets.MonthBegin(1))
+        he_hasta = (siguiente_mes_he - pd.Timedelta(days=1)).date()
+        meses = [
+            "enero", "febrero", "marzo", "abril", "mayo", "junio",
+            "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+        ]
+
+        st.info(
+            f"Mes seleccionado: **{meses[he_desde.month - 1]} de {he_desde.year}** · "
+            f"{he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}"
+        )
+    elif tipo_he_periodo == "Semana":
+        he_desde = fecha_ref_he - timedelta(days=fecha_ref_he.weekday())
+        he_hasta = he_desde + timedelta(days=6)
+        st.info(f"Semana seleccionada: **{he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}**")
+    else:
+        he_c1, he_c2 = st.columns(2)
+        with he_c1:
+            he_desde = st.date_input(
+                "Desde", value=fecha_ref_he.replace(day=1), key="he_fecha_desde"
+            )
+        with he_c2:
+            he_hasta = st.date_input(
+                "Hasta", value=fecha_ref_he, key="he_fecha_hasta"
+            )
+        if he_desde > he_hasta:
+            st.error("La fecha Desde no puede ser posterior a Hasta.")
+            st.stop()
+
+    he_c1, he_c2, he_c3 = st.columns(3)
+    with he_c1:
+        he_cantidad_cuadrillas = int(st.number_input(
+            "Cuadrillas disponibles", min_value=1, max_value=50, value=7, step=1,
+            key="he_cantidad_cuadrillas"
+        ))
+    with he_c2:
+        he_necesidad_diaria = int(st.number_input(
+            "Cuadrillas necesarias por día", min_value=0, max_value=50, value=1, step=1,
+            key="he_necesidad_diaria"
+        ))
+    with he_c3:
+        he_horas_jornada = int(st.number_input(
+            "Horas extras por jornada", min_value=1, max_value=12, value=3, step=1,
+            key="he_horas_jornada"
+        ))
+
+    he_plan = st.radio(
+        "Plan de asignación",
+        ["Plan A - Rotación continua", "Plan B - Anclado en la última cuadrilla con ejecución real"],
+        horizontal=True,
+        key="he_plan_asignacion"
+    )
+
+    if he_necesidad_diaria > he_cantidad_cuadrillas:
+        st.warning(
+            f"La necesidad diaria ({he_necesidad_diaria}) supera las cuadrillas disponibles "
+            f"({he_cantidad_cuadrillas}). Se limitará la asignación a las disponibles."
+        )
+
+    # El esquema considera jornadas de lunes a sábado; los domingos quedan libres.
+    he_fechas = pd.date_range(he_desde, he_hasta, freq="D")
+    he_fechas_laborables = [f.date() for f in he_fechas if f.weekday() < 6]
+    he_demanda_base = min(he_necesidad_diaria, he_cantidad_cuadrillas)
+
+    he_demanda_df = pd.DataFrame({
+        "Fecha": he_fechas,
+        "Día": [
+    ["Lunes", "Martes", "Miércoles", "Jueves",
+     "Viernes", "Sábado", "Domingo"][f.weekday()]
+    for f in he_fechas
+],
+        "¿Laborable?": ["No - domingo" if f.weekday() == 6 else "Sí" for f in he_fechas],
+        "Cuadrillas necesarias": [he_demanda_base if f.weekday() < 6 else 0 for f in he_fechas],
+    })
+    he_demanda_df["Fecha"] = pd.to_datetime(he_demanda_df["Fecha"])
+
+    st.markdown("### Necesidad de cuadrillas por fecha")
+    st.caption(
+        "La cantidad ingresada arriba se aplica inicialmente a todos los días de lunes a sábado. "
+        "Podés modificar cualquier fecha en la tabla; los domingos quedan en cero."
+    )
+    he_demanda_editada = st.data_editor(
+        he_demanda_df,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["Fecha", "Día", "¿Laborable?"],
+        column_config={
+            "Fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
+            "Cuadrillas necesarias": st.column_config.NumberColumn(
+                "Cuadrillas necesarias", min_value=0, max_value=he_cantidad_cuadrillas, step=1
+            ),
+        },
+        key="he_demanda_editor"
+    )
+
+    he_demanda_editada = he_demanda_editada.copy()
+    he_demanda_editada["Fecha"] = pd.to_datetime(he_demanda_editada["Fecha"]).dt.date
+    he_demanda_editada["Cuadrillas necesarias"] = (
+        pd.to_numeric(he_demanda_editada["Cuadrillas necesarias"], errors="coerce")
+        .fillna(0).clip(lower=0, upper=he_cantidad_cuadrillas).astype(int)
+    )
+    he_demanda_editada.loc[
+        he_demanda_editada["Fecha"].apply(lambda f: f.weekday() == 6), "Cuadrillas necesarias"
+    ] = 0
+
+    he_nombres_cuadrillas = [ 
+	"Abel-Juan",
+	"Ariel-Gastón",
+	"Brian-RodrigoVera",
+	"Cristian-RodrigoSosa",
+	"Daniel-LeoPerirano",
+	"Manuel-LeoQuintana",
+	"Nico-Pablo",
+   ][:he_cantidad_cuadrillas]
+
+    # Registro persistente de las cuadrillas que realizaron horas extras.
+    from pathlib import Path
+
+    he_archivo_registro = Path("registro_horas_extras.csv")
+
+    if he_archivo_registro.exists():
+        try:
+            he_registro_real = pd.read_csv(
+                he_archivo_registro,
+                dtype={"Fecha": str, "Cuadrilla": str}
+            )
+            he_registro_real = he_registro_real[
+                ["Fecha", "Cuadrilla"]
+            ].dropna().drop_duplicates(subset=["Fecha", "Cuadrilla"], keep="last")
+        except Exception:
+            he_registro_real = pd.DataFrame(
+                columns=["Fecha", "Cuadrilla"]
+            )
+    else:
+        he_registro_real = pd.DataFrame(
+            columns=["Fecha", "Cuadrilla"]
+        )
+
+    st.markdown("### Registrar horas extras realizadas")
+    st.caption(
+        "Seleccioná la fecha y las cuadrillas que efectivamente trabajaron. "
+        "Este registro se utilizará para continuar la rotación."
+    )
+
+    he_fecha_real = st.date_input(
+        "Fecha del trabajo realizado",
+        value=he_desde,
+        min_value=he_desde,
+        max_value=he_hasta,
+        key="he_fecha_trabajo_real"
+    )
+
+  
+
+
+    he_asignaciones = {f: [] for f in he_fechas_laborables}
+    he_convocatorias = {q: 0 for q in he_nombres_cuadrillas}
+
+    if he_plan.startswith("Plan A"):
+        # Rotación continua: el punto de inicio avanza una cuadrilla cada día laborable.
+        he_indice_inicio = 0
+        for f in he_fechas_laborables:
+            fila = he_demanda_editada.loc[he_demanda_editada["Fecha"] == f]
+            necesidad = int(fila["Cuadrillas necesarias"].iloc[0]) if not fila.empty else 0
+            necesidad = min(necesidad, he_cantidad_cuadrillas)
+            asignadas = [he_nombres_cuadrillas[(he_indice_inicio + j) % he_cantidad_cuadrillas] for j in range(necesidad)]
+            he_asignaciones[f] = asignadas
+            for q in asignadas:
+                he_convocatorias[q] += 1
+            he_indice_inicio = (he_indice_inicio + 1) % he_cantidad_cuadrillas
+    else:
+        # Plan B: la rotación se ajusta a las asignaciones reales.
+        he_cola = he_nombres_cuadrillas.copy()
+
+        # Agrupar los registros reales por fecha.
+        he_registros_por_fecha = {}
+
+        for _, registro in he_registro_real.iterrows():
+            fecha_registro = pd.to_datetime(
+                registro["Fecha"], errors="coerce"
+            )
+
+            if pd.isna(fecha_registro):
+                continue
+
+            fecha_registro = fecha_registro.date()
+            cuadrilla_registro = registro["Cuadrilla"]
+
+            if cuadrilla_registro in he_nombres_cuadrillas:
+                he_registros_por_fecha.setdefault(
+                    fecha_registro, []
+                ).append(cuadrilla_registro)
+
+        he_fechas_ambiguas_plan_b = []
+        for f in he_fechas_laborables:
+            fila = he_demanda_editada.loc[
+                he_demanda_editada["Fecha"] == f
+            ]
+
+            necesidad = (
+                int(fila["Cuadrillas necesarias"].iloc[0])
+                if not fila.empty else 0
+            )
+            necesidad = min(necesidad, he_cantidad_cuadrillas)
+
+            # Si existe un registro real, prevalece sobre la planificación.
+            if f in he_registros_por_fecha:
+                asignadas = list(dict.fromkeys(he_registros_por_fecha[f]))
+                he_asignaciones[f] = asignadas
+
+                for q in asignadas:
+                    he_convocatorias[q] += 1
+
+                # El registro actual guarda fecha y cuadrilla, pero no hora.
+                # Solo se puede anclar la rotación si hay una única cuadrilla
+                # registrada ese día. Con varias, no se inventa cuál fue la última.
+                if len(asignadas) == 1:
+                    ultima = asignadas[0]
+                    if ultima in he_cola:
+                        indice = he_cola.index(ultima)
+                        he_cola = he_cola[indice + 1:] + he_cola[:indice + 1]
+                elif len(asignadas) > 1:
+                    he_fechas_ambiguas_plan_b.append(f)
+
+                continue
+
+            # Sin registro real, se muestra la asignación planificada.
+            if necesidad == 0:
+                he_asignaciones[f] = []
+                continue
+
+            asignadas = he_cola[:necesidad]
+            he_asignaciones[f] = asignadas
+
+            for q in asignadas:
+                he_convocatorias[q] += 1
+
+            he_cola = he_cola[necesidad:] + asignadas
+
+        if he_fechas_ambiguas_plan_b:
+            fechas_txt = ", ".join(f.strftime("%d/%m/%Y") for f in he_fechas_ambiguas_plan_b)
+            st.warning(
+                "Plan B: hay más de una cuadrilla registrada en estas fechas "
+                f"({fechas_txt}), pero el registro no guarda horarios reales. "
+                "Se muestran las cuadrillas registradas, pero la rotación no se ancla "
+                "a ninguna de ellas en esas fechas porque no se puede determinar cuál terminó última."
+            )
+
+    he_horas_por_cuadrilla = {
+        q: he_convocatorias[q] * he_horas_jornada for q in he_nombres_cuadrillas
+    }
+    he_total_convocatorias = sum(he_convocatorias.values())
+    he_total_horas_cuadrilla = he_total_convocatorias * he_horas_jornada
+    he_dias_con_cobertura = sum(1 for f in he_fechas_laborables if he_asignaciones[f])
+
+    st.markdown("### Resumen del esquema")
+    hm1, hm2, hm3, hm4 = st.columns(4)
+    hm1.metric("Días con cobertura", he_dias_con_cobertura)
+    hm2.metric("Convocatorias", he_total_convocatorias)
+    hm3.metric("Horas-cuadrilla", he_total_horas_cuadrilla)
+    hm4.metric("Cuadrillas disponibles", he_cantidad_cuadrillas)
+
+    he_filas_calendario = []
+    for f in he_fechas:
+        if f.date().weekday() == 6:
+            equipos = "—"
+            cantidad_asignada = 0
+        else:
+            equipos_lista = he_asignaciones.get(f.date(), [])
+            equipos = ", ".join(equipos_lista) if equipos_lista else "Sin asignación"
+            cantidad_asignada = len(equipos_lista)
+        he_filas_calendario.append({
+            "Fecha": f.strftime("%d/%m/%Y"),
+            "Día": [
+    "Lunes", "Martes", "Miércoles", "Jueves",
+    "Viernes", "Sábado", "Domingo"
+][f.weekday()],
+            "Cuadrillas requeridas": int(he_demanda_editada.loc[he_demanda_editada["Fecha"] == f.date(), "Cuadrillas necesarias"].iloc[0]),
+            "Cuadrillas asignadas": equipos,
+            "Cantidad asignada": cantidad_asignada,
+            "Horas-cuadrilla del día": cantidad_asignada * he_horas_jornada,
+        })
+    he_calendario_df = pd.DataFrame(he_filas_calendario)
+
+    st.markdown("### Calendario de asignaciones")
+    st.dataframe(he_calendario_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Resumen por cuadrilla")
+    he_resumen_cuadrillas = pd.DataFrame([
+        {
+            "Cuadrilla": q,
+            "Convocatorias": he_convocatorias[q],
+            "Horas extras acumuladas": he_horas_por_cuadrilla[q],
+        }
+        for q in he_nombres_cuadrillas
+    ])
+    st.dataframe(he_resumen_cuadrillas, use_container_width=True, hide_index=True)
+
+    st.markdown("### Calendario mensual")
+    he_meses = sorted({(f.year, f.month) for f in he_fechas})
+    he_nombres_dias = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+    he_nombres_meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    for anio_he, mes_he in he_meses:
+        st.markdown(f"**{he_nombres_meses[mes_he - 1].capitalize()} de {anio_he}**")
+        he_grid = [["" for _ in range(7)] for _ in range(6)]
+        he_primer_dia = date(anio_he, mes_he, 1)
+        he_dias_mes = pd.Period(f"{anio_he}-{mes_he:02d}").days_in_month
+        for num_dia in range(1, he_dias_mes + 1):
+            f = date(anio_he, mes_he, num_dia)
+            fila_grid = f.day and (f.day + he_primer_dia.weekday() - 1) // 7
+            col_grid = f.weekday()
+            if f < he_desde or f > he_hasta:
+                texto = f"{num_dia}"
+            elif f.weekday() == 6:
+                texto = f"{num_dia}\nDomingo"
+            else:
+                lista_q = he_asignaciones.get(f, [])
+                horas_dia = len(lista_q) * he_horas_jornada
+                texto = f"{num_dia}\n{', '.join(lista_q) if lista_q else 'Sin asignación'}\n{horas_dia} h-cuadrilla"
+            he_grid[fila_grid][col_grid] = texto
+        he_grid_df = pd.DataFrame(he_grid, columns=he_nombres_dias)
+        st.dataframe(he_grid_df, use_container_width=True, hide_index=True)
+
+    def generar_pdf_esquema_he():
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_CENTER
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        except ImportError as e:
+            raise RuntimeError("Para generar PDF falta reportlab. Instalalo con: pip install reportlab") from e
+
+        buffer_pdf = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer_pdf, pagesize=landscape(A4),
+            rightMargin=1.0 * cm, leftMargin=1.0 * cm,
+            topMargin=1.0 * cm, bottomMargin=1.0 * cm
+        )
+        estilos = getSampleStyleSheet()
+        estilo_titulo = ParagraphStyle(
+            "TituloHE", parent=estilos["Title"], alignment=TA_CENTER,
+            fontSize=16, leading=19, spaceAfter=8
+        )
+        estilo_celda = ParagraphStyle(
+            "CeldaHE", parent=estilos["BodyText"], fontSize=7, leading=8
+        )
+        historia = [
+            Paragraph("Esquema de horas extras por período", estilo_titulo),
+            Paragraph(
+                f"Período: {he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}"
+                f" · Cuadrillas disponibles: {he_cantidad_cuadrillas}"
+                f" · Horas por jornada: {he_horas_jornada}"
+                f" · Plan: {he_plan}", estilos["Normal"]
+            ),
+            Spacer(1, 0.25 * cm),
+            Paragraph(
+                f"Convocatorias: {he_total_convocatorias} · Horas-cuadrilla: {he_total_horas_cuadrilla}"
+                f" · Días con cobertura: {he_dias_con_cobertura}", estilos["Normal"]
+            ),
+            Spacer(1, 0.3 * cm),
+            Paragraph("Detalle diario", estilos["Heading2"]),
+        ]
+        datos_pdf = [["Fecha", "Día", "Requeridas", "Cuadrillas asignadas", "Horas-cuadrilla"]]
+        for fila in he_filas_calendario:
+            datos_pdf.append([
+                fila["Fecha"], fila["Día"], str(fila["Cuadrillas requeridas"]),
+                fila["Cuadrillas asignadas"], str(fila["Horas-cuadrilla del día"])
+            ])
+        tabla_pdf = Table(datos_pdf, repeatRows=1, colWidths=[2.3*cm, 2.0*cm, 2.0*cm, 14.5*cm, 2.7*cm])
+        tabla_pdf.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#263746")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 7),
+            ("GRID", (0,0), (-1,-1), 0.35, colors.grey),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF2F5")]),
+            ("LEFTPADDING", (0,0), (-1,-1), 4), ("RIGHTPADDING", (0,0), (-1,-1), 4),
+            ("TOPPADDING", (0,0), (-1,-1), 3), ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ]))
+        historia.append(tabla_pdf)
+        historia += [Spacer(1, 0.35 * cm), Paragraph("Resumen por cuadrilla", estilos["Heading2"])]
+        resumen_pdf = [["Cuadrilla", "Convocatorias", "Horas extras acumuladas"]]
+        resumen_pdf += [[q, str(he_convocatorias[q]), str(he_horas_por_cuadrilla[q])] for q in he_nombres_cuadrillas]
+        tabla_resumen_pdf = Table(resumen_pdf, repeatRows=1, colWidths=[5*cm, 5*cm, 6*cm])
+        tabla_resumen_pdf.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#263746")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("GRID", (0,0), (-1,-1), 0.35, colors.grey),
+            ("FONTSIZE", (0,0), (-1,-1), 8),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF2F5")]),
+        ]))
+        historia.append(tabla_resumen_pdf)
+
+        # Calendario mensual imprimible: un cuadro por mes, con cuadrillas asignadas y horas.
+        for anio_he_pdf, mes_he_pdf in he_meses:
+            historia.append(PageBreak())
+            historia.append(Paragraph(f"Calendario: {he_nombres_meses[mes_he_pdf - 1].capitalize()} de {anio_he_pdf}", estilo_titulo))
+            calendario_pdf = [[Paragraph(d, estilo_celda) for d in he_nombres_dias]]
+            semanas_pdf = calendar.monthcalendar(anio_he_pdf, mes_he_pdf)
+            for semana_pdf in semanas_pdf:
+                celdas = []
+                for dia_pdf in semana_pdf:
+                    if dia_pdf == 0:
+                        celdas.append("")
+                        continue
+                    f_pdf = date(anio_he_pdf, mes_he_pdf, dia_pdf)
+                    if f_pdf < he_desde or f_pdf > he_hasta:
+                        contenido = str(dia_pdf)
+                    elif f_pdf.weekday() == 6:
+                        contenido = f"{dia_pdf}<br/>Domingo"
+                    else:
+                        q_pdf_lista = he_asignaciones.get(f_pdf, [])
+                        horas_pdf_dia = len(q_pdf_lista) * he_horas_jornada
+                        contenido = f"{dia_pdf}<br/>{', '.join(q_pdf_lista) if q_pdf_lista else 'Sin asignación'}<br/>{horas_pdf_dia} h-cuadrilla"
+                    celdas.append(Paragraph(contenido, estilo_celda))
+                calendario_pdf.append(celdas)
+            tabla_cal_pdf = Table(calendario_pdf, colWidths=[3.8*cm]*7, rowHeights=[0.7*cm] + [2.1*cm]*len(semanas_pdf))
+            tabla_cal_pdf.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#263746")),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("ALIGN", (0,0), (-1,0), "CENTER"),
+                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+                ("VALIGN", (0,0), (-1,-1), "TOP"),
+                ("LEFTPADDING", (0,0), (-1,-1), 4),
+                ("RIGHTPADDING", (0,0), (-1,-1), 4),
+                ("TOPPADDING", (0,0), (-1,-1), 4),
+            ]))
+            historia.append(tabla_cal_pdf)
+
+        doc.build(historia)
+        return buffer_pdf.getvalue()
+
+    st.markdown("### Exportar esquema")
+    try:
+        import calendar  # Se utiliza para construir los almanaques mensuales del PDF.
+        he_pdf_bytes = generar_pdf_esquema_he()
+        st.download_button(
+            "📄 Descargar esquema y calendario en PDF",
+            data=he_pdf_bytes,
+            file_name=f"esquema_horas_extras_{he_desde.strftime('%Y%m%d')}_{he_hasta.strftime('%Y%m%d')}.pdf",
+            mime="application/pdf",
+            key="download_pdf_esquema_he"
+        )
+    except Exception as e:
+        st.error(f"No se pudo generar el PDF: {e}")
+
+
+
+# ============================================================
+# TAB 9 - ANÁLISIS DE HORAS EXTRAS REALIZADAS
+# ============================================================
+with tabs[8]:
+    st.subheader("📊 Horas extras efectivamente realizadas por cierre de OS")
+    st.write(
+        "Las horas extra se calculan directamente desde «el inicio de la jornada» hasta el «Momento de Cierre de la OS». "
+        "Para cada orden se contabiliza el tiempo transcurrido desde el comienzo de la franja "
+        "extra hasta la hora de modificación: lunes a viernes desde las 16:00, sábados desde "
+        "las 12:00 y domingos desde las 00:00. El resumen identifica la cuadrilla mediante "
+        "la asignación de operadores editable."
+    )
+
+    he_alias_fecha = [
+        "Fecha de trabajo", "Fecha Trabajo", "Fecha Ejecucion", "Fecha Ejecución",
+        "Fecha real", "Fecha Instalacion", "Fecha Instalación"
+    ]
+    he_alias_inicio = [
+        "Inicio real", "Hora inicio real", "Fecha hora inicio", "Fecha y hora inicio",
+        "Inicio de trabajo", "Hora de inicio", "Hora inicio", "Inicio ejecucion",
+        "Inicio ejecución", "Fecha inicio real", "Fecha/hora inicio"
+    ]
+    he_alias_fin = [
+        "Fin real", "Hora fin real", "Fecha hora fin", "Fecha y hora fin",
+        "Fin de trabajo", "Hora de finalizacion", "Hora finalización", "Hora fin",
+        "Fin ejecucion", "Fin ejecución", "Fecha fin real", "Fecha/hora fin"
+    ]
+    he_alias_equipo = [
+        "Cuadrilla", "Nombre cuadrilla", "Equipo tecnico", "Equipo técnico",
+        "Cuadrilla responsable", "Grupo de trabajo", "Equipo de trabajo"
+    ]
+    he_alias_trabajo = ["ID Orden De Servicio", "Numero OS", "Número OS", "OS", "Trabajo"]
+
+    he_col_inicio_real = find_col(raw, he_alias_inicio)
+    he_col_fin_real = find_col(raw, he_alias_fin)
+    he_col_equipo_real = find_col(raw, he_alias_equipo)
+    he_col_fecha_real = find_col(raw, he_alias_fecha)
+    he_col_fecha_modificacion = find_col(raw, ["Fecha Modificacion", "Fecha Modificación"])
+    he_col_trabajo_real = find_col(raw, he_alias_trabajo)
+
+    st.markdown("### Fuente de datos detectada")
+    estado_cols = pd.DataFrame([
+        {"Dato necesario": "Inicio real (fecha y hora)", "Columna detectada": he_col_inicio_real or "No encontrada"},
+        {"Dato necesario": "Fin real (fecha y hora)", "Columna detectada": he_col_fin_real or "No encontrada"},
+        {"Dato necesario": "Fecha/hora de referencia", "Columna detectada": he_col_fecha_modificacion or "No encontrada"},
+        {"Dato necesario": "Cuadrilla responsable", "Columna detectada": he_col_equipo_real or "No hay columna explícita; se usa Operadores con asignación editable"},
+        {"Dato necesario": "Identificador del trabajo", "Columna detectada": he_col_trabajo_real or "No encontrado"},
+    ])
+    st.dataframe(estado_cols, use_container_width=True, hide_index=True)
+
+    def he_parse_datetime(series):
+        """Convierte fechas/horas mixtas sin usar fechas administrativas como ejecución."""
+        return pd.to_datetime(series, errors="coerce", dayfirst=True)
+
+    def he_minutos_extra(inicio, fin):
+        """Devuelve minutos extra por solapamiento real con las ventanas permitidas."""
+        if pd.isna(inicio) or pd.isna(fin) or fin <= inicio:
+            return 0
+
+        total = 0
+        dia = inicio.normalize()
+        ultimo_dia = fin.normalize()
+
+        while dia <= ultimo_dia:
+            siguiente = dia + pd.Timedelta(days=1)
+            tramo_inicio = max(inicio, dia)
+            tramo_fin = min(fin, siguiente)
+
+            if tramo_fin > tramo_inicio:
+                weekday = dia.weekday()
+
+                if weekday < 5:
+                    ventana_inicio = dia + pd.Timedelta(hours=16)
+                elif weekday == 5:
+                    ventana_inicio = dia + pd.Timedelta(hours=12)
+                else:
+                    ventana_inicio = dia
+
+                ventana_fin = siguiente
+                solape_inicio = max(tramo_inicio, ventana_inicio)
+                solape_fin = min(tramo_fin, ventana_fin)
+
+                if solape_fin > solape_inicio:
+                    total += int(
+                        (solape_fin - solape_inicio).total_seconds() // 60
+                    )
+
+            dia = siguiente
+
+        return total
+
+    # Fechas predeterminadas: primer y último día del mes actual.
+    hoy = date.today()
+    primer_dia_mes_actual = hoy.replace(day=1)
+
+    ultimo_dia_mes_actual = (
+        pd.Timestamp(primer_dia_mes_actual)
+        + pd.offsets.MonthEnd(0)
+    ).date()
+
+    he_min_fecha = primer_dia_mes_actual
+    he_max_fecha = ultimo_dia_mes_actual
+
+    he_base_real = pd.DataFrame()
+    he_datos_completos = bool(
+        he_col_inicio_real and he_col_fin_real and he_col_equipo_real
+    )
+
+    if he_col_fecha_modificacion:
+        st.info(
+            f"La columna **{he_col_fecha_modificacion}** es la referencia para contabilizar las horas extra. "
+            "Se calcula el tiempo acumulado desde las 16:00 de lunes a viernes, desde las 12:00 los sábados "
+            "y desde las 00:00 los domingos hasta la hora registrada de modificación."
+        )
+
+        he_puntos = raw.copy()
+        he_puntos["_he_marca_tiempo"] = he_parse_datetime(
+            he_puntos[he_col_fecha_modificacion]
+        )
+        he_puntos = he_puntos[
+            he_puntos["_he_marca_tiempo"].notna()
+        ].copy()
+
+        he_puntos["Fecha"] = he_puntos["_he_marca_tiempo"].dt.date
+        he_puntos["Hora"] = he_puntos["_he_marca_tiempo"].dt.strftime("%H:%M")
+        he_puntos["Día de semana"] = he_puntos["_he_marca_tiempo"].dt.dayofweek.map({
+            0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
+            4: "Viernes", 5: "Sábado", 6: "Domingo"
+        })
+
+        def he_es_fuera_horario(marca):
+            wd = marca.weekday()
+            minuto_dia = marca.hour * 60 + marca.minute
+
+            if wd < 5:
+                return minuto_dia >= 16 * 60
+            if wd == 5:
+                return minuto_dia >= 12 * 60
+            return True
+
+        he_puntos["Fuera de horario"] = (
+            he_puntos["_he_marca_tiempo"].apply(he_es_fuera_horario)
+        )
+
+        def he_horas_desde_inicio_franga(marca):
+            if pd.isna(marca):
+                return 0.0
+
+            wd = marca.weekday()
+            minutos_del_dia = marca.hour * 60 + marca.minute
+
+            if wd < 5:
+                inicio_extra = 16 * 60
+            elif wd == 5:
+                inicio_extra = 12 * 60
+            else:
+                inicio_extra = 0
+
+            return max(0, minutos_del_dia - inicio_extra) / 60.0
+
+        he_puntos["Horas extra"] = (
+            he_puntos["_he_marca_tiempo"].apply(he_horas_desde_inicio_franga)
+        )
+        he_puntos["Minutos extra"] = (
+            he_puntos["Horas extra"] * 60
+        ).round().astype(int)
+
+        col_estado_he = find_col(raw, ["Estado", "ESTADO"])
+        col_operadores_he = find_col(
+            raw, ["Operadores", "Operador", "Técnico", "Tecnico"]
+        )
+        he_columna_os = he_col_trabajo_real or find_col(
+            raw, ["Id", "ID", "Número", "Numero", "Nro OS"]
+        )
+
+        he_puntos["Orden / registro"] = (
+            he_puntos[he_columna_os].fillna("").astype(str)
+            if he_columna_os
+            else he_puntos.index.astype(str)
+        )
+        he_puntos["Operadores (origen)"] = (
+            he_puntos[col_operadores_he].fillna("Sin dato").astype(str).str.strip()
+            if col_operadores_he
+            else "No informado"
+        )
+
+        he_cuadrillas_disponibles = [
+            "Abel-Juan", "Ariel-Gastón", "Brian-RodrigoVera",
+            "Cristian-RodrigoSosa", "Daniel-LeoPerirano",
+            "Manuel-LeoQuintana", "Nico-Pablo", "Sin asignar"
+        ]
+
+        he_mapeo_inicial = {
+            "abelgonzalez": "Abel-Juan",
+            "abel gonzalez": "Abel-Juan",
+            "juan": "Abel-Juan",
+            "ariel": "Ariel-Gastón",
+            "soari": "Ariel-Gastón",
+            "gtuamas": "Ariel-Gastón",
+            "gaston": "Ariel-Gastón",
+            "gastón": "Ariel-Gastón",
+            "b.toloza": "Brian-RodrigoVera",
+            "toloza": "Brian-RodrigoVera",
+            "rodrigovera": "Brian-RodrigoVera",
+            "rodrigo vera": "Brian-RodrigoVera",
+            "cristian g": "Cristian-RodrigoSosa",
+            "cristian gonzalez": "Cristian-RodrigoSosa",
+            "rodrigososa": "Cristian-RodrigoSosa",
+            "rodrigo sosa": "Cristian-RodrigoSosa",
+            "danilopez": "Daniel-LeoPerirano",
+            "daniel lopez": "Daniel-LeoPerirano",
+            "leo perirano": "Daniel-LeoPerirano",
+            "leoperirano": "Daniel-LeoPerirano",
+            "mbordon": "Manuel-LeoQuintana",
+            "manuel bordon": "Manuel-LeoQuintana",
+            "leonelquintana": "Manuel-LeoQuintana",
+            "leo quintana": "Manuel-LeoQuintana",
+            "nlopez": "Nico-Pablo",
+            "nicolas lopez": "Nico-Pablo",
+            "pablo cabrera": "Nico-Pablo",
+            "pablo andres cabrera": "Nico-Pablo"
+        }
+
+        he_operadores_unicos = sorted(
+            x for x in he_puntos["Operadores (origen)"].dropna().astype(str).unique()
+            if x.strip() and x.strip().lower() not in {
+                "sin dato", "nan", "no informado"
+            }
+        )
+
+        def he_cuadrilla_sugerida(operador):
+            texto = str(operador).lower()
+            for clave, cuadrilla in he_mapeo_inicial.items():
+                if clave in texto:
+                    return cuadrilla
+            return "Sin asignar"
+
+        st.markdown("### Asignación de operadores a cuadrillas")
+        st.caption(
+            "El archivo contiene la columna 'Operadores', pero no una columna 'Cuadrilla'. "
+            "Las asignaciones sugeridas se pueden corregir en esta tabla. Los registros sin "
+            "asignación quedan identificados como 'Sin asignar'."
+        )
+
+        he_mapeo_default = pd.DataFrame({
+            "Operador registrado": he_operadores_unicos,
+            "Cuadrilla": [
+                he_cuadrilla_sugerida(x) for x in he_operadores_unicos
+            ]
+        })
+
+        he_mapeo_editado = st.data_editor(
+            he_mapeo_default,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["Operador registrado"],
+            column_config={
+                "Cuadrilla": st.column_config.SelectboxColumn(
+                    "Cuadrilla",
+                    options=he_cuadrillas_disponibles,
+                    required=True
+                )
+            },
+            key="he_mapeo_operadores_cuadrillas"
+        )
+
+        he_mapa_operador_cuadrilla = dict(zip(
+            he_mapeo_editado["Operador registrado"],
+            he_mapeo_editado["Cuadrilla"]
+        ))
+
+        he_puntos["Cuadrilla"] = (
+            he_puntos["Operadores (origen)"]
+            .map(he_mapa_operador_cuadrilla)
+            .fillna("Sin asignar")
+        )
+
+        he_puntos["Estado (origen)"] = (
+            he_puntos[col_estado_he].fillna("Sin dato").astype(str).str.strip()
+            if col_estado_he
+            else "No informado"
+        )
+
+        if he_puntos.empty:
+            st.warning(
+                f"La columna {he_col_fecha_modificacion} no contiene fechas/horas válidas."
+            )
+        else:
+            hf1, hf2 = st.columns(2)
+
+            with hf1:
+                he_filtro_desde = st.date_input(
+                    "Desde",
+                    value=he_min_fecha,
+                    key="he_punto_desde"
+                )
+
+            with hf2:
+                he_filtro_hasta = st.date_input(
+                    "Hasta",
+                    value=he_max_fecha,
+                    key="he_punto_hasta"
+                )
+
+            he_dias_semana = [
+                "Lunes", "Martes", "Miércoles", "Jueves",
+                "Viernes", "Sábado", "Domingo"
+            ]
+            he_filtro_dias = st.multiselect(
+                "Día de la semana",
+                he_dias_semana,
+                default=he_dias_semana,
+                key="he_punto_dias"
+            )
+
+            he_opciones_cuadrilla = sorted(
+                he_puntos["Cuadrilla"].dropna().unique().tolist()
+            )
+            he_filtro_cuadrillas_puntos = st.multiselect(
+                "Cuadrillas",
+                he_opciones_cuadrilla,
+                default=he_opciones_cuadrilla,
+                key="he_punto_cuadrillas"
+            )
+
+            he_estados_disponibles = sorted(
+                he_puntos["Estado (origen)"].dropna().astype(str).unique().tolist()
+            )
+            he_estados_default = [
+                x for x in he_estados_disponibles
+                if x.strip().lower() == "cerrada"
+            ]
+            he_filtro_estados = st.multiselect(
+                "Estado de la orden",
+                he_estados_disponibles,
+                default=he_estados_default or he_estados_disponibles,
+                key="he_punto_estados"
+            )
+
+            if he_filtro_desde > he_filtro_hasta:
+                st.error("La fecha Desde no puede ser posterior a Hasta.")
+                st.stop()
+
+            he_puntos_filtrados = he_puntos[
+                he_puntos["Fecha"].between(he_filtro_desde, he_filtro_hasta)
+                & he_puntos["Día de semana"].isin(he_filtro_dias)
+                & he_puntos["Cuadrilla"].isin(he_filtro_cuadrillas_puntos)
+                & he_puntos["Estado (origen)"].isin(he_filtro_estados)
+            ].copy()
+
+            he_puntos_extra = he_puntos_filtrados[
+                he_puntos_filtrados["Fuera de horario"]
+            ].copy()
+
+            # CAMBIO 1: regla de redondeo de minutos.
+            # 0-10 minutos: hora completa inferior.
+            # 11-40 minutos: media hora.
+            # 41-59 minutos: hora siguiente.
+            def he_redondear_minutos(minutos):
+                minutos = max(0, int(round(minutos)))
+                horas, resto = divmod(minutos, 60)
+
+                if resto <= 10:
+                    return horas * 60
+                elif resto <= 40:
+                    return horas * 60 + 30
+                else:
+                    return (horas + 1) * 60
+
+            # CAMBIO 2: para los acumulados se utiliza solo el último
+            # cierre de OS de cada cuadrilla por día.
+            he_puntos_cerrados = he_puntos_filtrados[
+                he_puntos_filtrados["Estado (origen)"]
+                .astype(str).str.strip().str.upper().eq("CERRADA")
+                & he_puntos_filtrados["Fuera de horario"]
+            ].copy()
+
+            he_ultimo_cierre_dia = (
+                he_puntos_cerrados
+                .sort_values("_he_marca_tiempo")
+                .groupby(["Cuadrilla", "Fecha"], as_index=False)
+                .tail(1)
+                .copy()
+            )
+
+            he_total_horas_puntos = float(
+                he_ultimo_cierre_dia["Horas extra"].sum()
+            )
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "Registros analizados",
+                f"{len(he_puntos_filtrados):,}".replace(",", ".")
+            )
+            m2.metric(
+                "Órdenes con horas extra",
+                f"{len(he_puntos_extra):,}".replace(",", ".")
+            )
+            m3.metric("Total horas extra", f"{he_total_horas_puntos:.2f} h")
+            m4.metric(
+                "% órdenes fuera de horario",
+                f"{(100 * len(he_puntos_extra) / len(he_puntos_filtrados)) if len(he_puntos_filtrados) else 0:.1f}%"
+            )
+
+            st.markdown("### Horas extra acumuladas por cuadrilla")
+
+            if not he_puntos_extra.empty:
+                he_por_cuadrilla_puntos = (
+                    he_ultimo_cierre_dia.groupby("Cuadrilla")["Horas extra"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .rename("Horas extra")
+                )
+                st.bar_chart(he_por_cuadrilla_puntos)
+
+                st.markdown("### Horas extra por día de la semana")
+                he_por_dia = (
+                    he_ultimo_cierre_dia.groupby("Día de semana")["Horas extra"]
+                    .sum()
+                    .reindex(he_dias_semana, fill_value=0)
+                    .rename("Horas extra")
+                )
+                st.bar_chart(he_por_dia)
+
+                st.markdown("### Horas extra por hora de modificación")
+                he_por_hora = (
+                    he_ultimo_cierre_dia.assign(
+                        Hora_entera=he_ultimo_cierre_dia["_he_marca_tiempo"].dt.hour
+                    )
+                    .groupby("Hora_entera")["Horas extra"]
+                    .sum()
+                    .rename("Horas extra")
+                )
+                st.bar_chart(he_por_hora)
+
+                st.markdown("### Detalle de órdenes y horas extra calculadas")
+                he_detalle_puntos = he_puntos_extra[
+                    [
+                        "Fecha", "Hora", "Día de semana", "Orden / registro",
+                        "Cuadrilla", "Operadores (origen)", "Estado (origen)",
+                        "Minutos extra", "Horas extra"
+                    ]
+                ].copy()
+                st.dataframe(
+                    he_detalle_puntos,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                st.markdown("### Impacto directo por cuadrilla")
+
+                he_cantidad_ordenes = (
+                    he_puntos_extra.groupby("Cuadrilla", as_index=False)
+                    .agg(**{
+                        "Órdenes con horas extra": ("Orden / registro", "size")
+                    })
+                )
+
+                he_tiempo_cuadrilla = (
+                    he_ultimo_cierre_dia.groupby("Cuadrilla", as_index=False)
+                    .agg(**{
+                        "Minutos extra acumulados": ("Minutos extra", "sum"),
+                        "Horas extra acumuladas": ("Horas extra", "sum"),
+                    })
+                )
+
+                he_resumen_por_cuadrilla = he_cantidad_ordenes.merge(
+                    he_tiempo_cuadrilla,
+                    on="Cuadrilla",
+                    how="left"
+                )
+
+                he_resumen_por_cuadrilla[
+                    ["Minutos extra acumulados", "Horas extra acumuladas"]
+                ] = he_resumen_por_cuadrilla[
+                    ["Minutos extra acumulados", "Horas extra acumuladas"]
+                ].fillna(0)
+
+                he_resumen_por_cuadrilla["Horas extra redondeadas"] = (
+                    he_resumen_por_cuadrilla["Minutos extra acumulados"]
+                    .apply(he_redondear_minutos)
+                    .apply(lambda m: f"{m // 60}:{m % 60:02d} h")
+                )
+
+                he_resumen_por_cuadrilla["Horas extra acumuladas"] = (
+                    he_resumen_por_cuadrilla["Horas extra acumuladas"].round(2)
+                )
+
+                he_resumen_por_cuadrilla = he_resumen_por_cuadrilla.sort_values(
+                    "Horas extra acumuladas",
+                    ascending=False
+                )
+
+                st.dataframe(
+                    he_resumen_por_cuadrilla,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                st.caption(
+                    "Cada registro suma sus horas a la cuadrilla asignada al operador. "
+                    "Corregí la asignación de operadores arriba si una orden corresponde "
+                    "a otra cuadrilla; el impacto se actualiza en este resumen, los gráficos "
+                    "y las exportaciones."
+                )
+
+                st.markdown("### Resumen por cuadrilla y día")
+
+                he_cantidad_ordenes_dia = (
+                    he_puntos_extra.groupby(
+                        ["Cuadrilla", "Fecha", "Día de semana"]
+                    )
+                    .agg(**{
+                        "Órdenes con horas extra": ("Orden / registro", "size")
+                    })
+                    .reset_index()
+                )
+
+                he_tiempo_dia = (
+                    he_ultimo_cierre_dia.groupby(
+                        ["Cuadrilla", "Fecha", "Día de semana"]
+                    )
+                    .agg(**{
+                        "Minutos extra": ("Minutos extra", "sum"),
+                        "Horas extra": ("Horas extra", "sum")
+                    })
+                    .reset_index()
+                )
+
+                he_resumen_cuadrilla_dia = he_cantidad_ordenes_dia.merge(
+                    he_tiempo_dia,
+                    on=["Cuadrilla", "Fecha", "Día de semana"],
+                    how="left"
+                )
+
+                he_resumen_cuadrilla_dia[
+                    ["Minutos extra", "Horas extra"]
+                ] = he_resumen_cuadrilla_dia[
+                    ["Minutos extra", "Horas extra"]
+                ].fillna(0)
+
+                he_resumen_cuadrilla_dia = he_resumen_cuadrilla_dia.sort_values(
+                    ["Fecha", "Cuadrilla"]
+                )
+
+                st.dataframe(
+                    he_resumen_cuadrilla_dia,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # PDF del análisis filtrado.
+                def he_generar_pdf_analisis():
+                    from xml.sax.saxutils import escape
+                    from reportlab.lib import colors
+                    from reportlab.lib.enums import TA_CENTER
+                    from reportlab.lib.pagesizes import A4, landscape
+                    from reportlab.lib.styles import (
+                        getSampleStyleSheet, ParagraphStyle
+                    )
+                    from reportlab.lib.units import cm
+                    from reportlab.platypus import (
+                        SimpleDocTemplate, Paragraph, Spacer,
+                        Table, LongTable, TableStyle
+                    )
+
+                    buffer_pdf = io.BytesIO()
+                    doc = SimpleDocTemplate(
+                        buffer_pdf,
+                        pagesize=landscape(A4),
+                        rightMargin=0.8 * cm,
+                        leftMargin=0.8 * cm,
+                        topMargin=0.8 * cm,
+                        bottomMargin=0.8 * cm
+                    )
+
+                    estilos = getSampleStyleSheet()
+                    titulo = ParagraphStyle(
+                        "TituloAnalisisHE",
+                        parent=estilos["Title"],
+                        alignment=TA_CENTER,
+                        fontSize=15,
+                        leading=18,
+                        spaceAfter=8
+                    )
+                    celda = ParagraphStyle(
+                        "CeldaAnalisisHE",
+                        parent=estilos["BodyText"],
+                        fontSize=6.5,
+                        leading=7.5
+                    )
+
+                    historia = [
+                        Paragraph(
+                            "Análisis de horas extras efectivamente realizadas",
+                            titulo
+                        ),
+                        Paragraph(
+                            f"Período: {he_filtro_desde.strftime('%d/%m/%Y')} al "
+                            f"{he_filtro_hasta.strftime('%d/%m/%Y')} · "
+                            f"Total de horas extra: {he_total_horas_puntos:.2f} h · "
+                            f"Órdenes fuera de horario: {len(he_puntos_extra)}",
+                            estilos["Normal"]
+                        ),
+                        Paragraph(
+                            "Criterio: lunes a viernes desde las 16:00; sábados "
+                            "desde las 12:00; domingos desde las 00:00. Las horas "
+                            "se imputan a la cuadrilla asignada al operador.",
+                            estilos["Normal"]
+                        ),
+                        Spacer(1, 0.25 * cm),
+                        Paragraph(
+                            "Impacto acumulado por cuadrilla",
+                            estilos["Heading2"]
+                        )
+                    ]
+
+                    datos_resumen = [[
+                        "Cuadrilla", "Órdenes con horas extra",
+                        "Minutos extra", "Horas extra acumuladas",
+                        "Horas extra redondeadas"
+                    ]]
+
+                    for _, fila in he_resumen_por_cuadrilla.iterrows():
+                        datos_resumen.append([
+                            str(fila["Cuadrilla"]),
+                            str(int(fila["Órdenes con horas extra"])),
+                            str(int(fila["Minutos extra acumulados"])),
+                            f"{float(fila['Horas extra acumuladas']):.2f}",
+                            str(fila["Horas extra redondeadas"])
+                        ])
+
+                    tabla_resumen = Table(
+                        datos_resumen,
+                        repeatRows=1,
+                        colWidths=[4.5 * cm, 4.5 * cm, 3.5 * cm, 4 * cm, 4 * cm]
+                    )
+                    tabla_resumen.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("GRID", (0, 0), (-1, -1), 0.35, colors.grey),
+                        ("FONTSIZE", (0, 0), (-1, -1), 8),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
+                            colors.white, colors.HexColor("#EEF2F5")
+                        ]),
+                    ]))
+
+                    historia += [
+                        tabla_resumen,
+                        Spacer(1, 0.3 * cm),
+                        Paragraph(
+                            "Detalle de órdenes imputadas",
+                            estilos["Heading2"]
+                        )
+                    ]
+
+                    columnas_pdf = [
+                        "Fecha", "Hora", "Día de semana", "Orden / registro",
+                        "Cuadrilla", "Operadores (origen)", "Estado (origen)",
+                        "Minutos extra", "Horas extra"
+                    ]
+                    datos_detalle = [[
+                        Paragraph(escape(str(c)), celda) for c in columnas_pdf
+                    ]]
+
+                    for _, fila in he_detalle_puntos.iterrows():
+                        datos_detalle.append([
+                            str(fila["Fecha"]),
+                            str(fila["Hora"]),
+                            str(fila["Día de semana"]),
+                            Paragraph(
+                                escape(str(fila["Orden / registro"])), celda
+                            ),
+                            Paragraph(escape(str(fila["Cuadrilla"])), celda),
+                            Paragraph(
+                                escape(str(fila["Operadores (origen)"])), celda
+                            ),
+                            Paragraph(
+                                escape(str(fila["Estado (origen)"])), celda
+                            ),
+                            str(int(fila["Minutos extra"])),
+                            f"{float(fila['Horas extra']):.2f}"
+                        ])
+
+                    tabla_detalle = LongTable(
+                        datos_detalle,
+                        repeatRows=1,
+                        colWidths=[
+                            2.0 * cm, 1.3 * cm, 2.4 * cm, 2.4 * cm,
+                            3.0 * cm, 4.2 * cm, 2.2 * cm, 1.8 * cm, 1.7 * cm
+                        ]
+                    )
+                    tabla_detalle.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
+                            colors.white, colors.HexColor("#EEF2F5")
+                        ]),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ]))
+
+                    historia.append(tabla_detalle)
+                    doc.build(historia)
+                    return buffer_pdf.getvalue()
+
+                try:
+                    he_pdf_analisis = he_generar_pdf_analisis()
+                    st.download_button(
+                        "📄 Descargar análisis de horas extras en PDF",
+                        data=he_pdf_analisis,
+                        file_name=(
+                            f"analisis_horas_extras_"
+                            f"{he_filtro_desde.strftime('%Y%m%d')}_"
+                            f"{he_filtro_hasta.strftime('%Y%m%d')}.pdf"
+                        ),
+                        mime="application/pdf",
+                        key="he_export_pdf_analisis"
+                    )
+                except Exception as e:
+                    st.error(f"No se pudo generar el PDF del análisis: {e}")
+
+                he_excel = io.BytesIO()
+                with pd.ExcelWriter(he_excel, engine="openpyxl") as writer:
+                    he_detalle_puntos.to_excel(
+                        writer, index=False, sheet_name="Fuera de horario"
+                    )
+                    he_puntos_filtrados[[
+                        "Fecha", "Hora", "Día de semana", "Orden / registro",
+                        "Cuadrilla", "Operadores (origen)", "Estado (origen)",
+                        "Fuera de horario", "Minutos extra", "Horas extra"
+                    ]].to_excel(
+                        writer, index=False, sheet_name="Todos los registros"
+                    )
+                    he_resumen_cuadrilla_dia.to_excel(
+                        writer, index=False, sheet_name="Resumen por cuadrilla"
+                    )
+                    he_mapeo_editado.to_excel(
+                        writer, index=False, sheet_name="Asignacion de cuadrillas"
+                    )
+
+                st.download_button(
+                    "📥 Exportar análisis a Excel",
+                    data=he_excel.getvalue(),
+                    file_name="analisis_registros_fuera_de_horario.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="he_export_puntos"
+                )
+            else:
+                st.success(
+                    "No hay registros que coincidan con las franjas horarias "
+                    "de horas extras en el período seleccionado."
+                )
+
+    elif not he_datos_completos:
+        st.warning(
+            "El archivo cargado no contiene las tres columnas necesarias para calcular "
+            "las horas extras realizadas: inicio real, fin real y cuadrilla responsable. "
+            "Las columnas disponibles incluyen fechas administrativas y operadores, pero "
+            "no permiten deducir con fiabilidad cuánto tiempo trabajó cada cuadrilla. "
+            "No se calcularán horas estimadas ni se atribuirán operadores a cuadrillas por suposición."
+        )
+        st.info(
+            "Para habilitar este análisis en el mismo Excel/CSV, agregá columnas con fecha y hora "
+            "reales de inicio y fin (por ejemplo, `Inicio real` y `Fin real`) y una columna "
+            "`Cuadrilla` con el nombre del equipo. Si una jornada cruza medianoche, el inicio y "
+            "el fin deben conservar la fecha completa."
+        )
+
+        plantilla_he = pd.DataFrame(columns=[
+            "Numero OS", "Trabajo", "Cuadrilla", "Inicio real", "Fin real"
+        ])
+        plantilla_buffer = io.BytesIO()
+
+        with pd.ExcelWriter(plantilla_buffer, engine="openpyxl") as writer:
+            plantilla_he.to_excel(
+                writer, index=False, sheet_name="Ejecucion real"
+            )
+
+        st.download_button(
+            "📥 Descargar plantilla de ejecución real",
+            data=plantilla_buffer.getvalue(),
+            file_name="plantilla_ejecucion_real_horas_extras.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="he_plantilla_ejecucion_real"
+        )
+
+    else:
+        he_base_real = raw.copy()
+        he_base_real["_he_inicio"] = he_parse_datetime(
+            he_base_real[he_col_inicio_real]
+        )
+        he_base_real["_he_fin"] = he_parse_datetime(
+            he_base_real[he_col_fin_real]
+        )
+        he_base_real["_he_cuadrilla"] = (
+            he_base_real[he_col_equipo_real].fillna("").astype(str).str.strip()
+        )
+        he_base_real["_he_trabajo"] = (
+            he_base_real[he_col_trabajo_real].fillna("").astype(str).str.strip()
+            if he_col_trabajo_real
+            else ""
+        )
+
+        he_base_real = he_base_real[
+            he_base_real["_he_inicio"].notna()
+            & he_base_real["_he_fin"].notna()
+            & he_base_real["_he_cuadrilla"].ne("")
+            & he_base_real["_he_cuadrilla"].str.lower().ne("nan")
+            & (he_base_real["_he_fin"] > he_base_real["_he_inicio"])
+        ].copy()
+
+        dedup_cols = ["_he_cuadrilla", "_he_inicio", "_he_fin"]
+        if he_col_trabajo_real:
+            dedup_cols.insert(0, "_he_trabajo")
+
+        cantidad_pre_dedup = len(he_base_real)
+        he_base_real = he_base_real.drop_duplicates(
+            subset=dedup_cols, keep="last"
+        ).copy()
+        duplicados_eliminados = cantidad_pre_dedup - len(he_base_real)
+
+        he_base_real["Minutos extra"] = he_base_real.apply(
+            lambda r: he_minutos_extra(r["_he_inicio"], r["_he_fin"]),
+            axis=1
+        )
+        he_base_real["Horas extra"] = he_base_real["Minutos extra"] / 60
+        he_base_real["Fecha"] = he_base_real["_he_inicio"].dt.date
+        he_base_real["Día de semana"] = (
+            he_base_real["_he_inicio"].dt.day_name().map({
+                "Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles",
+                "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sábado",
+                "Sunday": "Domingo"
+            })
+        )
+        he_base_real["Trabajo"] = (
+            he_base_real["_he_trabajo"]
+            if he_col_trabajo_real
+            else "Sin identificador"
+        )
+        he_base_real["Cuadrilla"] = he_base_real["_he_cuadrilla"]
+        he_base_real["Inicio real"] = he_base_real["_he_inicio"]
+        he_base_real["Fin real"] = he_base_real["_he_fin"]
+
+        hf1, hf2, hf3 = st.columns(3)
+
+        with hf1:
+            he_filtro_desde = st.date_input(
+                "Desde",
+                value=he_min_fecha,
+                key="he_real_desde"
+            )
+
+        with hf2:
+            he_filtro_hasta = st.date_input(
+                "Hasta",
+                value=he_max_fecha,
+                key="he_real_hasta"
+            )
+
+        with hf3:
+            he_filtro_cuadrillas = st.multiselect(
+                "Cuadrilla",
+                sorted(he_base_real["Cuadrilla"].dropna().unique().tolist()),
+                default=sorted(
+                    he_base_real["Cuadrilla"].dropna().unique().tolist()
+                ),
+                key="he_real_cuadrillas"
+            )
+
+        he_dias_semana = [
+            "Lunes", "Martes", "Miércoles", "Jueves",
+            "Viernes", "Sábado", "Domingo"
+        ]
+        he_filtro_dias = st.multiselect(
+            "Día de la semana",
+            he_dias_semana,
+            default=he_dias_semana,
+            key="he_real_dias"
+        )
+
+        if he_filtro_desde > he_filtro_hasta:
+            st.error("La fecha Desde no puede ser posterior a Hasta.")
+            st.stop()
+
+        he_real_filtrado = he_base_real[
+            he_base_real["Fecha"].between(he_filtro_desde, he_filtro_hasta)
+            & he_base_real["Cuadrilla"].isin(he_filtro_cuadrillas)
+            & he_base_real["Día de semana"].isin(he_filtro_dias)
+        ].copy()
+
+        he_real_con_extra = he_real_filtrado[
+            he_real_filtrado["Minutos extra"] > 0
+        ].copy()
+
+        he_total_minutos = int(he_real_con_extra["Minutos extra"].sum())
+        he_total_horas = he_total_minutos / 60
+        he_total_cuadrillas = int(he_real_con_extra["Cuadrilla"].nunique())
+        he_promedio_cuadrilla = (
+            he_total_horas / he_total_cuadrillas
+            if he_total_cuadrillas
+            else 0
+        )
+        he_mayor_cuadrilla = (
+            he_real_con_extra.groupby("Cuadrilla")["Horas extra"].sum().idxmax()
+            if not he_real_con_extra.empty
+            else "—"
+        )
+
+        st.caption(
+            f"Intervalos válidos: {len(he_base_real)} · "
+            f"Duplicados exactos eliminados: {duplicados_eliminados} · "
+            f"Intervalos con horas extra en filtros: {len(he_real_con_extra)}"
+        )
+
+        hm1, hm2, hm3, hm4, hm5 = st.columns(5)
+        hm1.metric("Total horas extra", f"{he_total_horas:.2f} h")
+        hm2.metric("Cuadrillas con extras", he_total_cuadrillas)
+        hm3.metric("Promedio por cuadrilla", f"{he_promedio_cuadrilla:.2f} h")
+        hm4.metric("Mayor acumulado", he_mayor_cuadrilla)
+        hm5.metric("Intervalos con extras", len(he_real_con_extra))
+
+        st.markdown("### Horas extra por cuadrilla")
+        if he_real_con_extra.empty:
+            st.info("No hay horas extras en el período y filtros seleccionados.")
+        else:
+            he_por_cuadrilla = (
+                he_real_con_extra.groupby("Cuadrilla", as_index=False)["Horas extra"]
+                .sum()
+                .sort_values("Horas extra", ascending=False)
+            )
+            st.bar_chart(he_por_cuadrilla.set_index("Cuadrilla")["Horas extra"])
+
+            st.markdown("### Evolución temporal")
+            he_por_fecha = (
+                he_real_con_extra.groupby("Fecha", as_index=False)["Horas extra"]
+                .sum()
+                .sort_values("Fecha")
+            )
+            he_por_fecha["Fecha"] = pd.to_datetime(he_por_fecha["Fecha"])
+            st.line_chart(he_por_fecha.set_index("Fecha")["Horas extra"])
+
+            st.markdown("### Distribución por día de semana")
+            he_por_dia = (
+                he_real_con_extra.groupby(
+                    "Día de semana", as_index=False
+                )["Horas extra"].sum()
+            )
+            he_por_dia["Día de semana"] = pd.Categorical(
+                he_por_dia["Día de semana"],
+                categories=he_dias_semana,
+                ordered=True
+            )
+            he_por_dia = he_por_dia.sort_values("Día de semana")
+            st.bar_chart(he_por_dia.set_index("Día de semana")["Horas extra"])
+
+            st.markdown("### Ranking de cuadrillas")
+            he_ranking = he_por_cuadrilla.copy()
+            he_ranking["Ranking"] = range(1, len(he_ranking) + 1)
+            he_ranking = he_ranking[
+                ["Ranking", "Cuadrilla", "Horas extra"]
+            ]
+            st.dataframe(
+                he_ranking,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        st.markdown("### Detalle de ejecución real")
+        he_detalle_cols = [
+            "Trabajo", "Fecha", "Cuadrilla", "Inicio real", "Fin real",
+            "Minutos extra", "Horas extra", "Día de semana"
+        ]
+        he_detalle = he_real_filtrado[he_detalle_cols].copy()
+        he_detalle["Inicio real"] = he_detalle["Inicio real"].dt.strftime(
+            "%d/%m/%Y %H:%M"
+        )
+        he_detalle["Fin real"] = he_detalle["Fin real"].dt.strftime(
+            "%d/%m/%Y %H:%M"
+        )
+        st.dataframe(
+            he_detalle.sort_values(["Fecha", "Cuadrilla", "Inicio real"]),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.markdown("### Resumen diario y calendario")
+        he_calendario_real = (
+            he_real_filtrado.groupby(
+                ["Fecha", "Día de semana"], as_index=False
+            )["Horas extra"]
+            .sum()
+            .sort_values("Fecha")
+        )
+        st.dataframe(
+            he_calendario_real,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        he_export = io.BytesIO()
+        with pd.ExcelWriter(he_export, engine="openpyxl") as writer:
+            he_detalle.to_excel(writer, index=False, sheet_name="Detalle")
+            he_calendario_real.to_excel(
+                writer, index=False, sheet_name="Resumen diario"
+            )
+
+            if not he_real_filtrado.empty:
+                (
+                    he_real_filtrado.groupby(
+                        "Cuadrilla", as_index=False
+                    )["Horas extra"]
+                    .sum()
+                    .sort_values("Horas extra", ascending=False)
+                    .to_excel(
+                        writer, index=False, sheet_name="Resumen cuadrillas"
+                    )
+                )
+
+        st.download_button(
+            "📥 Exportar análisis a Excel",
+            data=he_export.getvalue(),
+            file_name=(
+                f"analisis_horas_extras_"
+                f"{he_filtro_desde:%Y%m%d}_{he_filtro_hasta:%Y%m%d}.xlsx"
+            ),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="he_real_exportar_excel"
+        )
