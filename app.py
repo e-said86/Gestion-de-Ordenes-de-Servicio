@@ -2943,17 +2943,20 @@ with tabs[8]:
                 he_puntos_filtrados["Fuera de horario"]
             ].copy()
 
-            # CAMBIO 1: regla de redondeo de minutos.
-            # 0-10 minutos: hora completa inferior.
-            # 11-40 minutos: media hora.
-            # 41-59 minutos: hora siguiente.
+            # CAMBIO 1: redondeo de minutos acumulados.
+            # 00-14 minutos: hora inferior.
+            # 15-44 minutos: media hora.
+            # 45-59 minutos: hora siguiente.
             def he_redondear_minutos(minutos):
-                minutos = max(0, int(round(minutos)))
+                if minutos is None or pd.isna(minutos):
+                    return 0
+
+                minutos = max(0, int(round(float(minutos))))
                 horas, resto = divmod(minutos, 60)
 
-                if resto <= 10:
+                if resto < 15:
                     return horas * 60
-                elif resto <= 40:
+                elif resto < 45:
                     return horas * 60 + 30
                 else:
                     return (horas + 1) * 60
@@ -3051,7 +3054,6 @@ with tabs[8]:
                     he_ultimo_cierre_dia.groupby("Cuadrilla", as_index=False)
                     .agg(**{
                         "Minutos extra acumulados": ("Minutos extra", "sum"),
-                        "Horas extra acumuladas": ("Horas extra", "sum"),
                     })
                 )
 
@@ -3062,31 +3064,67 @@ with tabs[8]:
                 )
 
                 he_resumen_por_cuadrilla[
-                    ["Minutos extra acumulados", "Horas extra acumuladas"]
-                ] = he_resumen_por_cuadrilla[
-                    ["Minutos extra acumulados", "Horas extra acumuladas"]
-                ].fillna(0)
+                    "Minutos extra acumulados"
+                ] = (
+                    he_resumen_por_cuadrilla["Minutos extra acumulados"]
+                    .fillna(0)
+                    .round()
+                    .astype(int)
+                )
 
+                # Horas acumuladas: tiempo real expresado en H:MM.
+                def he_formatear_minutos(minutos):
+                    minutos = max(0, int(minutos))
+                    horas, minutos_restantes = divmod(minutos, 60)
+                    return f"{horas}:{minutos_restantes:02d} h"
+
+                he_resumen_por_cuadrilla["Horas extra acumuladas"] = (
+                    he_resumen_por_cuadrilla["Minutos extra acumulados"]
+                    .apply(he_formatear_minutos)
+                )
+
+                # Horas redondeadas: múltiplos de 30 minutos.
                 he_resumen_por_cuadrilla["Horas extra redondeadas"] = (
                     he_resumen_por_cuadrilla["Minutos extra acumulados"]
                     .apply(he_redondear_minutos)
-                    .apply(lambda m: f"{m // 60}:{m % 60:02d} h")
+                    .apply(he_formatear_minutos)
                 )
 
-                he_resumen_por_cuadrilla["Horas extra acumuladas"] = (
-                    he_resumen_por_cuadrilla["Horas extra acumuladas"].round(2)
-                )
-
-                he_resumen_por_cuadrilla = he_resumen_por_cuadrilla.sort_values(
-                    "Horas extra acumuladas",
-                    ascending=False
+                # Ordenar por tiempo real acumulado, de mayor a menor.
+                he_resumen_por_cuadrilla = (
+                    he_resumen_por_cuadrilla.sort_values(
+                        "Minutos extra acumulados",
+                        ascending=False
+                    )
                 )
 
                 st.dataframe(
                     he_resumen_por_cuadrilla,
                     use_container_width=True,
-                    hide_index=True
-                )
+                    hide_index=True,
+                    column_config={
+                        "Cuadrilla": st.column_config.TextColumn(
+                            "Cuadrilla",
+                            alignment="left"
+                        ),
+                        "Órdenes con horas extra": st.column_config.NumberColumn(
+                            "Órdenes con horas extra",
+                            alignment="center"
+                        ),
+                        "Minutos extra acumulados": st.column_config.NumberColumn(
+                            "Minutos extra acumulados",
+                            alignment="center"
+                        ),
+                        "Horas extra acumuladas": st.column_config.TextColumn(
+                            "Horas extra acumuladas",
+                            alignment="center"
+                        ),
+                       "Horas extra redondeadas": st.column_config.TextColumn(
+                            "Horas extra redondeadas",
+                            alignment="center"
+                        ),
+                     } 
+                  )
                 st.caption(
                     "Cada registro suma sus horas a la cuadrilla asignada al operador. "
                     "Corregí la asignación de operadores arriba si una orden corresponde "
@@ -3138,6 +3176,8 @@ with tabs[8]:
                     use_container_width=True,
                     hide_index=True
                 )
+
+
 
                 # PDF del análisis filtrado.
                 def he_generar_pdf_analisis():
@@ -3216,7 +3256,7 @@ with tabs[8]:
                             str(fila["Cuadrilla"]),
                             str(int(fila["Órdenes con horas extra"])),
                             str(int(fila["Minutos extra acumulados"])),
-                            f"{float(fila['Horas extra acumuladas']):.2f}",
+                            str(fila["Horas extra acumuladas"]),
                             str(fila["Horas extra redondeadas"])
                         ])
 
@@ -3301,6 +3341,7 @@ with tabs[8]:
                     doc.build(historia)
                     return buffer_pdf.getvalue()
 
+               
                 try:
                     he_pdf_analisis = he_generar_pdf_analisis()
                     st.download_button(
