@@ -3017,14 +3017,41 @@ with tabs[8]:
                 st.bar_chart(he_por_cuadrilla_puntos)
 
                 st.markdown("### Horas extra por día de la semana")
+
+                # Orden cronológico obligatorio de los días.
+                he_dias_semana = [
+                    "Lunes",
+                    "Martes",
+                    "Miércoles",
+                    "Jueves",
+                    "Viernes",
+                    "Sábado",
+                    "Domingo"
+                ]
+
                 he_por_dia = (
-                    he_ultimo_cierre_dia.groupby("Día de semana")["Horas extra"]
+                    he_ultimo_cierre_dia
+                    .groupby("Día de semana")["Horas extra"]
                     .sum()
                     .reindex(he_dias_semana, fill_value=0)
                     .rename("Horas extra")
+                    .reset_index()
                 )
-                st.bar_chart(he_por_dia)
 
+                # Forzar el orden cronológico en el gráfico.
+                he_por_dia["Día de semana"] = pd.Categorical(
+                    he_por_dia["Día de semana"],
+                    categories=he_dias_semana,
+                    ordered=True
+                )
+
+                he_por_dia = (
+                    he_por_dia
+                    .sort_values("Día de semana")
+                    .set_index("Día de semana")
+                )
+
+                st.bar_chart(he_por_dia)
                 st.markdown("### Horas extra por hora de modificación")
                 he_por_hora = (
                     he_ultimo_cierre_dia.assign(
