@@ -2588,7 +2588,6 @@ with tabs[7]:
         st.error(f"No se pudo generar el PDF: {e}")
 
 
-
 # ============================================================
 # TAB 9 - ANÁLISIS DE HORAS EXTRAS REALIZADAS
 # ============================================================
@@ -2679,6 +2678,13 @@ with tabs[8]:
             dia = siguiente
 
         return total
+
+    # Formato de presentación para mostrar minutos como horas:minutos.
+    # No modifica los valores numéricos utilizados en cálculos, gráficos ni Excel.
+    def he_formatear_minutos(minutos):
+        minutos = max(0, int(round(float(minutos))))
+        horas, minutos_restantes = divmod(minutos, 60)
+        return f"{horas}:{minutos_restantes:02d} hs"
 
     # Fechas predeterminadas: primer y último día del mes actual.
     hoy = date.today()
@@ -2990,7 +2996,10 @@ with tabs[8]:
                 "Órdenes con horas extra",
                 f"{len(he_puntos_extra):,}".replace(",", ".")
             )
-            m3.metric("Total horas extra", f"{he_total_horas_puntos:.2f} h")
+            m3.metric(
+                "Total horas extra",
+                he_formatear_minutos(he_total_horas_puntos * 60)
+            )
             m4.metric(
                 "% órdenes fuera de horario",
                 f"{(100 * len(he_puntos_extra) / len(he_puntos_filtrados)) if len(he_puntos_filtrados) else 0:.1f}%"
@@ -3035,8 +3044,16 @@ with tabs[8]:
                         "Minutos extra", "Horas extra"
                     ]
                 ].copy()
+                # Copia exclusiva para mostrar las horas en formato H:MM.
+                # Se conservan los datos numéricos originales para gráficos y Excel.
+                he_detalle_puntos_vista = he_detalle_puntos.copy()
+                he_detalle_puntos_vista["Horas extra"] = (
+                    he_detalle_puntos_vista["Minutos extra"]
+                    .apply(he_formatear_minutos)
+                )
+
                 st.dataframe(
-                    he_detalle_puntos,
+                    he_detalle_puntos_vista,
                     use_container_width=True,
                     hide_index=True
                 )
@@ -3071,12 +3088,6 @@ with tabs[8]:
                     .round()
                     .astype(int)
                 )
-
-                # Horas acumuladas: tiempo real expresado en H:MM.
-                def he_formatear_minutos(minutos):
-                    minutos = max(0, int(minutos))
-                    horas, minutos_restantes = divmod(minutos, 60)
-                    return f"{horas}:{minutos_restantes:02d} h"
 
                 he_resumen_por_cuadrilla["Horas extra acumuladas"] = (
                     he_resumen_por_cuadrilla["Minutos extra acumulados"]
@@ -3171,8 +3182,15 @@ with tabs[8]:
                     ["Fecha", "Cuadrilla"]
                 )
 
+                # Copia de presentación: los datos numéricos originales no se modifican.
+                he_resumen_cuadrilla_dia_vista = he_resumen_cuadrilla_dia.copy()
+                he_resumen_cuadrilla_dia_vista["Horas extra"] = (
+                    he_resumen_cuadrilla_dia_vista["Minutos extra"]
+                    .apply(he_formatear_minutos)
+                )
+
                 st.dataframe(
-                    he_resumen_cuadrilla_dia,
+                    he_resumen_cuadrilla_dia_vista,
                     use_container_width=True,
                     hide_index=True
                 )
@@ -3228,7 +3246,8 @@ with tabs[8]:
                         Paragraph(
                             f"Período: {he_filtro_desde.strftime('%d/%m/%Y')} al "
                             f"{he_filtro_hasta.strftime('%d/%m/%Y')} · "
-                            f"Total de horas extra: {he_total_horas_puntos:.2f} h · "
+                            f"Total de horas extra: "
+                            f"{he_formatear_minutos(he_total_horas_puntos * 60)} · "
                             f"Órdenes fuera de horario: {len(he_puntos_extra)}",
                             estilos["Normal"]
                         ),
@@ -3310,7 +3329,7 @@ with tabs[8]:
                                 escape(str(fila["Estado (origen)"])), celda
                             ),
                             str(int(fila["Minutos extra"])),
-                            f"{float(fila['Horas extra']):.2f}"
+                            he_formatear_minutos(fila["Minutos extra"])
                         ])
 
                     tabla_detalle = LongTable(
@@ -3552,9 +3571,18 @@ with tabs[8]:
         )
 
         hm1, hm2, hm3, hm4, hm5 = st.columns(5)
-        hm1.metric("Total horas extra", f"{he_total_horas:.2f} h")
+        hm1.metric(
+            "Total horas extra",
+            he_formatear_minutos(he_total_minutos)
+        )
         hm2.metric("Cuadrillas con extras", he_total_cuadrillas)
-        hm3.metric("Promedio por cuadrilla", f"{he_promedio_cuadrilla:.2f} h")
+        hm3.metric(
+            "Promedio por cuadrilla",
+            he_formatear_minutos(
+                he_total_minutos / he_total_cuadrillas
+                if he_total_cuadrillas else 0
+            )
+        )
         hm4.metric("Mayor acumulado", he_mayor_cuadrilla)
         hm5.metric("Intervalos con extras", len(he_real_con_extra))
 
@@ -3598,8 +3626,14 @@ with tabs[8]:
             he_ranking = he_ranking[
                 ["Ranking", "Cuadrilla", "Horas extra"]
             ]
+            # Copia para visualización; el ranking numérico original se conserva.
+            he_ranking_vista = he_ranking.copy()
+            he_ranking_vista["Horas extra"] = (
+                he_ranking_vista["Horas extra"] * 60
+            ).apply(he_formatear_minutos)
+
             st.dataframe(
-                he_ranking,
+                he_ranking_vista,
                 use_container_width=True,
                 hide_index=True
             )
@@ -3616,8 +3650,17 @@ with tabs[8]:
         he_detalle["Fin real"] = he_detalle["Fin real"].dt.strftime(
             "%d/%m/%Y %H:%M"
         )
+        # Copia para mostrar H:MM sin alterar la tabla numérica usada en Excel.
+        he_detalle_vista = he_detalle.copy()
+        he_detalle_vista["Horas extra"] = (
+            he_detalle_vista["Minutos extra"]
+            .apply(he_formatear_minutos)
+        )
+
         st.dataframe(
-            he_detalle.sort_values(["Fecha", "Cuadrilla", "Inicio real"]),
+            he_detalle_vista.sort_values(
+                ["Fecha", "Cuadrilla", "Inicio real"]
+            ),
             use_container_width=True,
             hide_index=True
         )
@@ -3630,8 +3673,14 @@ with tabs[8]:
             .sum()
             .sort_values("Fecha")
         )
+        # Copia de presentación; el calendario original sigue siendo numérico.
+        he_calendario_real_vista = he_calendario_real.copy()
+        he_calendario_real_vista["Horas extra"] = (
+            he_calendario_real_vista["Horas extra"] * 60
+        ).apply(he_formatear_minutos)
+
         st.dataframe(
-            he_calendario_real,
+            he_calendario_real_vista,
             use_container_width=True,
             hide_index=True
         )
