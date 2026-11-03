@@ -978,6 +978,257 @@ with tabs[4]:
             st.bar_chart(grafico_casos)
 
     # ---------------------------------------------------------
+    # Exportación completa de Productividad a PDF
+    # ---------------------------------------------------------
+    def generar_pdf_productividad():
+        try:
+            from xml.sax.saxutils import escape
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_CENTER
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import cm
+            from reportlab.platypus import (
+                SimpleDocTemplate, Paragraph, Spacer, LongTable, TableStyle
+            )
+        except ImportError as e:
+            raise RuntimeError(
+                "Para generar PDF falta la librería reportlab. "
+                "Instalala con: pip install reportlab"
+            ) from e
+
+        buffer_pdf = io.BytesIO()
+        margen = 0.8 * cm
+        doc = SimpleDocTemplate(
+            buffer_pdf,
+            pagesize=landscape(A4),
+            rightMargin=margen,
+            leftMargin=margen,
+            topMargin=0.8 * cm,
+            bottomMargin=0.8 * cm
+        )
+        estilos = getSampleStyleSheet()
+        titulo_pdf = ParagraphStyle(
+            "TituloProductividadPDF",
+            parent=estilos["Title"],
+            alignment=TA_CENTER,
+            fontSize=15,
+            leading=18,
+            spaceAfter=8
+        )
+        subtitulo_pdf = ParagraphStyle(
+            "SubtituloProductividadPDF",
+            parent=estilos["Heading2"],
+            fontSize=10,
+            leading=12,
+            spaceBefore=8,
+            spaceAfter=4
+        )
+        celda_pdf = ParagraphStyle(
+            "CeldaProductividadPDF",
+            parent=estilos["BodyText"],
+            fontSize=6.5,
+            leading=7.5,
+            wordWrap="CJK"
+        )
+        encabezado_pdf = ParagraphStyle(
+            "EncabezadoProductividadPDF",
+            parent=celda_pdf,
+            textColor=colors.white,
+            fontName="Helvetica-Bold"
+        )
+
+        historia = [
+            Paragraph("Informe de productividad por personal", titulo_pdf),
+            Paragraph(
+                f"Período: {prod_desde.strftime('%d/%m/%Y')} al "
+                f"{prod_hasta.strftime('%d/%m/%Y')} · "
+                f"Sucursal: {escape(', '.join(sucursal))} · "
+                f"Fecha de medición: {escape(str(col_fecha_medicion))}",
+                estilos["Normal"]
+            ),
+            Spacer(1, 0.2 * cm),
+            Paragraph(
+                f"Órdenes del período: {fmt(total_periodo)} · "
+                f"Órdenes cerradas: {fmt(total_cerradas)} · "
+                f"Operadores activos: {fmt(operadores_activos)} · "
+                f"Promedio cierres/día: {promedio_dia:.1f}",
+                estilos["Normal"]
+            ),
+            Paragraph(
+                f"Días con cierres: {fmt(dias_con_cierre)} · "
+                f"Promedio en días con cierre: "
+                f"{safe_div(total_cerradas, dias_con_cierre):.1f} · "
+                f"Mejor día: "
+                f"{int(dia_max['Órdenes Cerradas'])} OS "
+                f"({dia_max['Fecha'].strftime('%d/%m/%Y')})"
+                if dia_max is not None
+                else "Días con cierres: 0 · Mejor día: sin registros",
+                estilos["Normal"]
+            )
+        ]
+
+        ancho_util = landscape(A4)[0] - 2 * margen
+
+        def agregar_tabla(titulo, dataframe, font_size=6.5):
+            historia.append(Paragraph(escape(titulo), subtitulo_pdf))
+            if dataframe is None or dataframe.empty:
+                historia.append(Paragraph("Sin datos para mostrar.", estilos["Normal"]))
+                return
+
+            tabla_df = dataframe.copy()
+            datos = [[
+                Paragraph(escape(str(columna)), encabezado_pdf)
+                for columna in tabla_df.columns
+            ]]
+            for _, fila in tabla_df.iterrows():
+                fila_pdf = []
+                for valor in fila.tolist():
+                    if pd.isna(valor):
+                        texto = ""
+                    elif isinstance(valor, (pd.Timestamp, date)):
+                        texto = valor.strftime("%d/%m/%Y")
+                    else:
+                        texto = str(valor)
+                    fila_pdf.append(Paragraph(escape(texto), celda_pdf))
+                datos.append(fila_pdf)
+
+            cantidad_columnas = max(len(tabla_df.columns), 1)
+            if cantidad_columnas > 1:
+                primera = min(3.2 * cm, ancho_util * 0.22)
+                restante = max(ancho_util - primera, 1 * cm)
+                anchos = [primera] + [restante / (cantidad_columnas - 1)] * (cantidad_columnas - 1)
+            else:
+                anchos = [ancho_util]
+
+            tabla = LongTable(
+                datos,
+                repeatRows=1,
+                colWidths=anchos,
+                hAlign="LEFT"
+            )
+            tabla.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), font_size),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
+                    colors.white, colors.HexColor("#EEF2F5")
+                ]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            historia.append(tabla)
+            historia.append(Spacer(1, 0.15 * cm))
+
+        agregar_tabla("Rendimiento detallado por operador", prod_data)
+
+        diario_pdf = diario.copy()
+        diario_pdf["Fecha"] = pd.to_datetime(diario_pdf["Fecha"]).dt.strftime("%d/%m/%Y")
+        agregar_tabla("Productividad día por día", diario_pdf)
+
+        if not df_prod_cerradas.empty:
+            matriz_pdf = pd.pivot_table(
+                df_prod_cerradas,
+                index="_usuario_productividad",
+                columns="_dia",
+                values="_estado_productividad",
+                aggfunc="count",
+                fill_value=0
+            ).reindex(columns=rango_dias, fill_value=0)
+            matriz_pdf["TOTAL"] = matriz_pdf.sum(axis=1)
+            matriz_pdf = (
+                matriz_pdf.sort_values("TOTAL", ascending=False)
+                .reset_index()
+                .rename(columns={"_usuario_productividad": "Confeccionada Por"})
+            )
+            matriz_pdf.columns = [
+                colx.strftime("%d/%m") if isinstance(colx, pd.Timestamp) else str(colx)
+                for colx in matriz_pdf.columns
+            ]
+        else:
+            matriz_pdf = pd.DataFrame()
+        agregar_tabla("Cierres por operador por día", matriz_pdf, font_size=5.5)
+
+        if not df_prod_cerradas.empty:
+            casos_pdf_base = df_prod_cerradas.copy()
+            casos_pdf_base["_caso_pdf"] = (
+                casos_pdf_base["_caso"].fillna("").astype(str).str.strip().str.upper()
+            )
+            casos_pdf_base = casos_pdf_base[
+                casos_pdf_base["_caso_pdf"].isin(CASOS)
+            ].copy()
+
+            if not casos_pdf_base.empty:
+                casos_pdf = pd.crosstab(
+                    casos_pdf_base["_usuario_productividad"],
+                    casos_pdf_base["_caso_pdf"]
+                ).reindex(columns=CASOS, fill_value=0)
+                casos_pdf["TOTAL"] = casos_pdf.sum(axis=1)
+                casos_pdf = (
+                    casos_pdf.sort_values("TOTAL", ascending=False)
+                    .reset_index()
+                    .rename(columns={"_usuario_productividad": "Confeccionada Por"})
+                )
+                detalle_pdf = (
+                    casos_pdf_base
+                    .groupby(
+                        ["_usuario_productividad", "_dia", "_caso_pdf"]
+                    )
+                    .size()
+                    .reset_index(name="OS Cerradas")
+                    .rename(columns={
+                        "_usuario_productividad": "Confeccionada Por",
+                        "_dia": "Fecha",
+                        "_caso_pdf": "Caso asociado"
+                    })
+                    .sort_values(["Fecha", "Confeccionada Por", "Caso asociado"])
+                )
+                detalle_pdf["Fecha"] = pd.to_datetime(
+                    detalle_pdf["Fecha"]
+                ).dt.strftime("%d/%m/%Y")
+            else:
+                casos_pdf = pd.DataFrame()
+                detalle_pdf = pd.DataFrame()
+        else:
+            casos_pdf = pd.DataFrame()
+            detalle_pdf = pd.DataFrame()
+
+        agregar_tabla("Casos de trabajo cerrados por operador", casos_pdf)
+        agregar_tabla("Cierres detallados por operador, día y caso", detalle_pdf)
+
+        estados_pdf = (
+            df_prod["_estado_productividad"]
+            .value_counts()
+            .rename_axis("Estado")
+            .reset_index(name="Cantidad")
+        )
+        agregar_tabla("Estados incluidos en el período", estados_pdf)
+
+        doc.build(historia)
+        return buffer_pdf.getvalue()
+
+    st.markdown("### 📄 Exportar productividad")
+    try:
+        pdf_productividad = generar_pdf_productividad()
+        st.download_button(
+            "📄 Descargar informe completo de productividad en PDF",
+            data=pdf_productividad,
+            file_name=(
+                f"productividad_{prod_desde.strftime('%Y%m%d')}_"
+                f"{prod_hasta.strftime('%Y%m%d')}.pdf"
+            ),
+            mime="application/pdf",
+            key="productividad_exportar_pdf"
+        )
+    except Exception as e:
+        st.error(f"No se pudo generar el PDF de productividad: {e}")
+
+    # ---------------------------------------------------------
     # Control técnico específico de Productividad
     # ---------------------------------------------------------
     with st.expander("🔧 Control de Productividad"):
@@ -2123,7 +2374,7 @@ with tabs[7]:
 
     tipo_he_periodo = st.radio(
         "Período a planificar",
-        ["Mes", "Semana", "Período personalizado"],
+        ["Mes", "Varios meses", "Semana", "Período personalizado"],
         horizontal=True,
         key="he_tipo_periodo"
     )
@@ -2134,19 +2385,38 @@ with tabs[7]:
         key="he_fecha_referencia"
     )
 
-    if tipo_he_periodo == "Mes":
+    if tipo_he_periodo in ["Mes", "Varios meses"]:
         he_desde = fecha_ref_he.replace(day=1)
-        siguiente_mes_he = (pd.Timestamp(he_desde) + pd.offsets.MonthBegin(1))
+        he_cantidad_meses = 1
+        if tipo_he_periodo == "Varios meses":
+            he_cantidad_meses = int(st.number_input(
+                "Cantidad de meses a planificar",
+                min_value=2,
+                max_value=24,
+                value=3,
+                step=1,
+                key="he_cantidad_meses"
+            ))
+        siguiente_mes_he = (
+            pd.Timestamp(he_desde) + pd.DateOffset(months=he_cantidad_meses)
+        )
         he_hasta = (siguiente_mes_he - pd.Timedelta(days=1)).date()
         meses = [
             "enero", "febrero", "marzo", "abril", "mayo", "junio",
             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
         ]
 
-        st.info(
-            f"Mes seleccionado: **{meses[he_desde.month - 1]} de {he_desde.year}** · "
-            f"{he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}"
-        )
+        if he_cantidad_meses == 1:
+            st.info(
+                f"Mes seleccionado: **{meses[he_desde.month - 1]} de {he_desde.year}** · "
+                f"{he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}. "
+                "Podés elegir cualquier mes futuro desde la fecha de referencia."
+            )
+        else:
+            st.info(
+                f"Planificación de **{he_cantidad_meses} meses** · "
+                f"{he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}"
+            )
     elif tipo_he_periodo == "Semana":
         he_desde = fecha_ref_he - timedelta(days=fecha_ref_he.weekday())
         he_hasta = he_desde + timedelta(days=6)
