@@ -1125,11 +1125,8 @@ with tabs[4]:
             historia.append(tabla)
             historia.append(Spacer(1, 0.15 * cm))
 
-        agregar_tabla("Rendimiento detallado por operador", prod_data)
-
         diario_pdf = diario.copy()
         diario_pdf["Fecha"] = pd.to_datetime(diario_pdf["Fecha"]).dt.strftime("%d/%m/%Y")
-        agregar_tabla("Productividad día por día", diario_pdf)
 
         if not df_prod_cerradas.empty:
             matriz_pdf = pd.pivot_table(
@@ -1152,7 +1149,6 @@ with tabs[4]:
             ]
         else:
             matriz_pdf = pd.DataFrame()
-        agregar_tabla("Cierres por operador por día", matriz_pdf, font_size=5.5)
 
         if not df_prod_cerradas.empty:
             casos_pdf_base = df_prod_cerradas.copy()
@@ -1198,8 +1194,7 @@ with tabs[4]:
             casos_pdf = pd.DataFrame()
             detalle_pdf = pd.DataFrame()
 
-        agregar_tabla("Casos de trabajo cerrados por operador", casos_pdf)
-        agregar_tabla("Cierres detallados por operador, día y caso", detalle_pdf)
+        # agregar_tabla("Cierres detallados por operador, día y caso", detalle_pdf)
 
         estados_pdf = (
             df_prod["_estado_productividad"]
@@ -1207,7 +1202,13 @@ with tabs[4]:
             .rename_axis("Estado")
             .reset_index(name="Cantidad")
         )
+
+        # Se agregan las secciones del PDF en el orden solicitado.
+        agregar_tabla("Rendimiento detallado por operador", prod_data)
+        agregar_tabla("Casos de trabajo cerrados por operador", casos_pdf)
         agregar_tabla("Estados incluidos en el período", estados_pdf)
+        agregar_tabla("Cierres por operador por día", matriz_pdf, font_size=5.5)
+        agregar_tabla("Productividad día por día", diario_pdf)
 
         doc.build(historia)
         return buffer_pdf.getvalue()
