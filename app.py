@@ -2438,7 +2438,7 @@ with tabs[7]:
     he_c1, he_c2, he_c3 = st.columns(3)
     with he_c1:
         he_cantidad_cuadrillas = int(st.number_input(
-            "Cuadrillas disponibles", min_value=1, max_value=50, value=7, step=1,
+            "Cuadrillas disponibles", min_value=1, max_value=7, value=7, step=1,
             key="he_cantidad_cuadrillas"
         ))
     with he_c2:
@@ -2511,15 +2511,132 @@ with tabs[7]:
         he_demanda_editada["Fecha"].apply(lambda f: f.weekday() == 6), "Cuadrillas necesarias"
     ] = 0
 
-    he_nombres_cuadrillas = [ 
-	"Abel-Juan",
-	"Ariel-Gastón",
-	"Brian-RodrigoVera",
-	"Cristian-RodrigoSosa",
-	"Daniel-LeoPerirano",
-	"Manuel-LeoQuintana",
-	"Nico-Pablo",
-   ][:he_cantidad_cuadrillas]
+    # Catálogo fijo de las siete cuadrillas. El orden se configura una sola vez
+    # y se mantiene de forma continua durante todo el período, aunque cambie el mes.
+    from pathlib import Path
+
+    he_catalogo_cuadrillas = [
+        "Abel-Juan",
+        "Ariel-Gastón",
+        "Brian-RodrigoVera",
+        "Cristian-RodrigoSosa",
+        "Daniel-LeoPerirano",
+        "Manuel-LeoQuintana",
+        "Nico-Pablo",
+    ]
+    he_nombres_cuadrillas = he_catalogo_cuadrillas.copy()
+
+    he_archivo_ordenes = Path(__file__).resolve().parent / "config_orden_cuadrillas_horas_extras.csv"
+    he_columnas_orden = ["Mes", "Cuadrilla", "Posición"]
+
+    if he_archivo_ordenes.exists():
+        try:
+            he_config_orden = pd.read_csv(he_archivo_ordenes)
+            if not all(c in he_config_orden.columns for c in he_columnas_orden):
+                he_config_orden = pd.DataFrame(columns=he_columnas_orden)
+            else:
+                he_config_orden = he_config_orden[
+                    he_config_orden["Cuadrilla"].isin(he_catalogo_cuadrillas)
+                ].copy()
+        except Exception:
+            he_config_orden = pd.DataFrame(columns=he_columnas_orden)
+    else:
+        he_config_orden = pd.DataFrame(columns=he_columnas_orden)
+
+    # Primero se busca el orden global nuevo. Si todavía no existe, se recupera
+    # como punto de partida la primera configuración mensual guardada anteriormente.
+    he_config_global = he_config_orden[
+        he_config_orden["Mes"].astype(str).str.upper() == "GLOBAL"
+    ].copy()
+
+    if he_config_global.empty and not he_config_orden.empty:
+        he_config_mensual = he_config_orden[
+            he_config_orden["Mes"].astype(str).str.upper() != "GLOBAL"
+        ].copy()
+        if not he_config_mensual.empty:
+            he_config_mensual["Mes_orden"] = he_config_mensual["Mes"].astype(str)
+            primer_mes_configurado = sorted(he_config_mensual["Mes_orden"].unique())[0]
+            he_config_global = he_config_mensual[
+                he_config_mensual["Mes_orden"] == primer_mes_configurado
+            ].copy()
+
+    if not he_config_global.empty:
+        he_config_global["Posición"] = pd.to_numeric(
+            he_config_global["Posición"], errors="coerce"
+        )
+        he_config_global = he_config_global.dropna(subset=["Posición"]).sort_values("Posición")
+        he_orden_guardado = he_config_global["Cuadrilla"].drop_duplicates().tolist()
+    else:
+        he_orden_guardado = []
+
+    he_orden_base = he_orden_guardado + [
+        q for q in he_catalogo_cuadrillas if q not in he_orden_guardado
+    ]
+
+    st.markdown("### 🔢 Orden general de cuadrillas")
+    st.caption(
+        "Configurá el orden una sola vez. La rotación semanal continuará de manera "
+        "correlativa durante todo el período seleccionado, sin reiniciarse al cambiar de mes. "
+        "Este mismo orden inicial se utiliza en el Plan A y en el Plan B."
+    )
+
+    he_tabla_orden = pd.DataFrame({
+        "Cuadrilla": he_orden_base,
+        "Posición": list(range(1, len(he_orden_base) + 1)),
+    })
+    he_tabla_orden_editada = st.data_editor(
+        he_tabla_orden,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["Cuadrilla"],
+        column_config={
+            "Cuadrilla": st.column_config.TextColumn("Cuadrilla"),
+            "Posición": st.column_config.NumberColumn(
+                "Posición", min_value=1, max_value=len(he_catalogo_cuadrillas), step=1
+            ),
+        },
+        key="he_editor_orden_global"
+    )
+
+    if st.button("💾 Guardar orden general de cuadrillas", key="he_guardar_orden_global"):
+        he_tabla_guardar = he_tabla_orden_editada.copy()
+        he_tabla_guardar["Posición"] = pd.to_numeric(
+            he_tabla_guardar["Posición"], errors="coerce"
+        )
+        posiciones_validas = (
+            he_tabla_guardar["Posición"].notna().all()
+            and he_tabla_guardar["Posición"].between(
+                1, len(he_catalogo_cuadrillas)
+            ).all()
+            and he_tabla_guardar["Posición"].mod(1).eq(0).all()
+            and he_tabla_guardar["Posición"].nunique() == len(he_catalogo_cuadrillas)
+            and he_tabla_guardar["Cuadrilla"].nunique() == len(he_catalogo_cuadrillas)
+        )
+
+        if not posiciones_validas:
+            st.error(
+                "Cada una de las siete cuadrillas debe tener una posición diferente, "
+                "desde 1 hasta 7, sin repetir números."
+            )
+        else:
+            he_tabla_guardar["Posición"] = he_tabla_guardar["Posición"].astype(int)
+            he_tabla_guardar["Mes"] = "GLOBAL"
+            he_config_global_guardar = he_tabla_guardar[he_columnas_orden].sort_values("Posición")
+            he_config_global_guardar.to_csv(
+                he_archivo_ordenes, index=False, encoding="utf-8-sig"
+            )
+            he_orden_base = he_config_global_guardar["Cuadrilla"].tolist()
+            st.success(
+                "Orden general guardado correctamente. Se aplicará de forma continua "
+                "al Plan A y al Plan B, sin reinicios mensuales."
+            )
+            st.rerun()
+
+    st.caption(
+        f"Configuración guardada en `{he_archivo_ordenes.name}` junto a la aplicación. "
+        "Si reducís la cantidad de cuadrillas disponibles, se tomarán las primeras "
+        "posiciones del orden general."
+    )
 
     # Registro persistente de las cuadrillas que realizaron horas extras.
     from pathlib import Path
@@ -2564,94 +2681,120 @@ with tabs[7]:
     he_asignaciones = {f: [] for f in he_fechas_laborables}
     he_convocatorias = {q: 0 for q in he_nombres_cuadrillas}
 
+    # La rotación se organiza por semanas completas (lunes a sábado) y usa
+    # una única secuencia global. El cambio de mes no reinicia el orden.
+    he_semanas = {}
+    for fecha in he_fechas_laborables:
+        lunes_semana = fecha - timedelta(days=fecha.weekday())
+        he_semanas.setdefault(lunes_semana, []).append(fecha)
+
+    he_orden_activo = he_orden_base[:he_cantidad_cuadrillas]
+
     if he_plan.startswith("Plan A"):
-        # Rotación continua: el punto de inicio avanza una cuadrilla cada día laborable.
-        he_indice_inicio = 0
-        for f in he_fechas_laborables:
-            fila = he_demanda_editada.loc[he_demanda_editada["Fecha"] == f]
-            necesidad = int(fila["Cuadrillas necesarias"].iloc[0]) if not fila.empty else 0
-            necesidad = min(necesidad, he_cantidad_cuadrillas)
-            asignadas = [he_nombres_cuadrillas[(he_indice_inicio + j) % he_cantidad_cuadrillas] for j in range(necesidad)]
-            he_asignaciones[f] = asignadas
-            for q in asignadas:
-                he_convocatorias[q] += 1
-            he_indice_inicio = (he_indice_inicio + 1) % he_cantidad_cuadrillas
-    else:
-        # Plan B: la rotación se ajusta a las asignaciones reales.
-        he_cola = he_nombres_cuadrillas.copy()
+        # Plan A: rotación correlativa semanal, continua entre todos los meses.
+        he_indice_rotacion = 0
 
-        # Agrupar los registros reales por fecha.
-        he_registros_por_fecha = {}
+        for lunes_semana, fechas_semana in sorted(he_semanas.items()):
+            necesidades_semana = {}
+            for f in fechas_semana:
+                fila = he_demanda_editada.loc[he_demanda_editada["Fecha"] == f]
+                necesidad = int(fila["Cuadrillas necesarias"].iloc[0]) if not fila.empty else 0
+                necesidades_semana[f] = min(necesidad, he_cantidad_cuadrillas)
 
-        for _, registro in he_registro_real.iterrows():
-            fecha_registro = pd.to_datetime(
-                registro["Fecha"], errors="coerce"
-            )
+            cantidad_semana = max(necesidades_semana.values(), default=0)
+            cuadrillas_semana = [
+                he_orden_activo[(he_indice_rotacion + j) % len(he_orden_activo)]
+                for j in range(cantidad_semana)
+            ] if he_orden_activo else []
 
-            if pd.isna(fecha_registro):
-                continue
-
-            fecha_registro = fecha_registro.date()
-            cuadrilla_registro = registro["Cuadrilla"]
-
-            if cuadrilla_registro in he_nombres_cuadrillas:
-                he_registros_por_fecha.setdefault(
-                    fecha_registro, []
-                ).append(cuadrilla_registro)
-
-        he_fechas_ambiguas_plan_b = []
-        for f in he_fechas_laborables:
-            fila = he_demanda_editada.loc[
-                he_demanda_editada["Fecha"] == f
-            ]
-
-            necesidad = (
-                int(fila["Cuadrillas necesarias"].iloc[0])
-                if not fila.empty else 0
-            )
-            necesidad = min(necesidad, he_cantidad_cuadrillas)
-
-            # Si existe un registro real, prevalece sobre la planificación.
-            if f in he_registros_por_fecha:
-                asignadas = list(dict.fromkeys(he_registros_por_fecha[f]))
+            for f in fechas_semana:
+                asignadas = cuadrillas_semana[:necesidades_semana[f]]
                 he_asignaciones[f] = asignadas
-
                 for q in asignadas:
                     he_convocatorias[q] += 1
 
-                # El registro actual guarda fecha y cuadrilla, pero no hora.
-                # Solo se puede anclar la rotación si hay una única cuadrilla
-                # registrada ese día. Con varias, no se inventa cuál fue la última.
-                if len(asignadas) == 1:
-                    ultima = asignadas[0]
-                    if ultima in he_cola:
-                        indice = he_cola.index(ultima)
-                        he_cola = he_cola[indice + 1:] + he_cola[:indice + 1]
-                elif len(asignadas) > 1:
-                    he_fechas_ambiguas_plan_b.append(f)
+            if he_orden_activo:
+                he_indice_rotacion = (
+                    he_indice_rotacion + cantidad_semana
+                ) % len(he_orden_activo)
 
+    else:
+        # Plan B: utiliza la misma secuencia global, pero toma la última
+        # ejecución real individual como ancla para continuar la rotación.
+        he_cola_plan_b = he_orden_activo.copy()
+
+        he_registros_por_fecha = {}
+        for _, registro in he_registro_real.iterrows():
+            fecha_registro = pd.to_datetime(registro["Fecha"], errors="coerce")
+            if pd.isna(fecha_registro):
                 continue
+            fecha_registro = fecha_registro.date()
+            cuadrilla_registro = registro["Cuadrilla"]
+            if cuadrilla_registro in he_orden_activo:
+                he_registros_por_fecha.setdefault(fecha_registro, []).append(
+                    cuadrilla_registro
+                )
 
-            # Sin registro real, se muestra la asignación planificada.
-            if necesidad == 0:
-                he_asignaciones[f] = []
-                continue
+        he_fechas_ambiguas_plan_b = []
 
-            asignadas = he_cola[:necesidad]
-            he_asignaciones[f] = asignadas
+        for lunes_semana, fechas_semana in sorted(he_semanas.items()):
+            necesidades_semana = {}
+            for f in fechas_semana:
+                fila = he_demanda_editada.loc[he_demanda_editada["Fecha"] == f]
+                necesidad = int(fila["Cuadrillas necesarias"].iloc[0]) if not fila.empty else 0
+                necesidades_semana[f] = min(necesidad, he_cantidad_cuadrillas)
 
-            for q in asignadas:
-                he_convocatorias[q] += 1
+            cantidad_semana = max(necesidades_semana.values(), default=0)
+            cuadrillas_semana = he_cola_plan_b[:cantidad_semana]
 
-            he_cola = he_cola[necesidad:] + asignadas
+            for f in fechas_semana:
+                if f in he_registros_por_fecha:
+                    asignadas = [
+                        q for q in dict.fromkeys(he_registros_por_fecha[f])
+                        if q in he_orden_activo
+                    ]
+                    he_asignaciones[f] = asignadas
+                    for q in asignadas:
+                        he_convocatorias[q] += 1
+                    if len(asignadas) > 1:
+                        he_fechas_ambiguas_plan_b.append(f)
+                else:
+                    asignadas = cuadrillas_semana[:necesidades_semana[f]]
+                    he_asignaciones[f] = asignadas
+                    for q in asignadas:
+                        he_convocatorias[q] += 1
+
+            fechas_reales_semana = [
+                f for f in fechas_semana if f in he_registros_por_fecha
+            ]
+            ultima_fecha_real = max(fechas_reales_semana) if fechas_reales_semana else None
+
+            if ultima_fecha_real is not None:
+                ultima_asignacion = [
+                    q for q in dict.fromkeys(he_registros_por_fecha[ultima_fecha_real])
+                    if q in he_cola_plan_b
+                ]
+            else:
+                ultima_asignacion = []
+
+            if len(ultima_asignacion) == 1:
+                indice = he_cola_plan_b.index(ultima_asignacion[0])
+                he_cola_plan_b = (
+                    he_cola_plan_b[indice + 1:] + he_cola_plan_b[:indice + 1]
+                )
+            elif he_cola_plan_b:
+                # Si no hay una ejecución real individual inequívoca,
+                # continúa desde la siguiente posición de la rotación prevista.
+                he_cola_plan_b = (
+                    he_cola_plan_b[cantidad_semana:] + he_cola_plan_b[:cantidad_semana]
+                )
 
         if he_fechas_ambiguas_plan_b:
             fechas_txt = ", ".join(f.strftime("%d/%m/%Y") for f in he_fechas_ambiguas_plan_b)
             st.warning(
                 "Plan B: hay más de una cuadrilla registrada en estas fechas "
                 f"({fechas_txt}), pero el registro no guarda horarios reales. "
-                "Se muestran las cuadrillas registradas, pero la rotación no se ancla "
-                "a ninguna de ellas en esas fechas porque no se puede determinar cuál terminó última."
+                "La rotación semanal no puede determinar cuál fue la última cuadrilla ejecutada."
             )
 
     he_horas_por_cuadrilla = {
@@ -2707,7 +2850,11 @@ with tabs[7]:
     st.markdown("### Calendario mensual")
     he_meses = sorted({(f.year, f.month) for f in he_fechas})
     he_nombres_dias = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-    he_nombres_meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    # Nombres de meses compartidos por el calendario en pantalla y el PDF.
+    he_nombres_meses = [
+        "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+    ]
     for anio_he, mes_he in he_meses:
         st.markdown(f"**{he_nombres_meses[mes_he - 1].capitalize()} de {anio_he}**")
         he_grid = [["" for _ in range(7)] for _ in range(6)]
@@ -2730,6 +2877,7 @@ with tabs[7]:
         st.dataframe(he_grid_df, use_container_width=True, hide_index=True)
 
     def generar_pdf_esquema_he():
+        """Genera exclusivamente el calendario mensual para imprimir y compartir."""
         try:
             from reportlab.lib import colors
             from reportlab.lib.enums import TA_CENTER
@@ -2737,125 +2885,130 @@ with tabs[7]:
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.units import cm
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+            from xml.sax.saxutils import escape
+            import calendar
         except ImportError as e:
             raise RuntimeError("Para generar PDF falta reportlab. Instalalo con: pip install reportlab") from e
 
         buffer_pdf = io.BytesIO()
         doc = SimpleDocTemplate(
-            buffer_pdf, pagesize=landscape(A4),
-            rightMargin=1.0 * cm, leftMargin=1.0 * cm,
-            topMargin=1.0 * cm, bottomMargin=1.0 * cm
+            buffer_pdf,
+            pagesize=landscape(A4),
+            rightMargin=0.8 * cm,
+            leftMargin=0.8 * cm,
+            topMargin=0.8 * cm,
+            bottomMargin=0.8 * cm,
         )
         estilos = getSampleStyleSheet()
         estilo_titulo = ParagraphStyle(
-            "TituloHE", parent=estilos["Title"], alignment=TA_CENTER,
-            fontSize=16, leading=19, spaceAfter=8
+            "TituloCalendarioHE",
+            parent=estilos["Title"],
+            alignment=TA_CENTER,
+            fontSize=17,
+            leading=20,
+            spaceAfter=5,
+        )
+        estilo_periodo = ParagraphStyle(
+            "PeriodoCalendarioHE",
+            parent=estilos["Normal"],
+            alignment=TA_CENTER,
+            fontSize=9,
+            leading=11,
+            spaceAfter=9,
+        )
+        estilo_encabezado = ParagraphStyle(
+            "EncabezadoCalendarioHE",
+            parent=estilos["Normal"],
+            alignment=TA_CENTER,
+            fontSize=9,
+            leading=11,
+            textColor=colors.white,
         )
         estilo_celda = ParagraphStyle(
-            "CeldaHE", parent=estilos["BodyText"], fontSize=7, leading=8
+            "CeldaCalendarioHE",
+            parent=estilos["BodyText"],
+            fontSize=8,
+            leading=10,
+            spaceAfter=0,
         )
-        historia = [
-            Paragraph("Esquema de horas extras por período", estilo_titulo),
-            Paragraph(
-                f"Período: {he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}"
-                f" · Cuadrillas disponibles: {he_cantidad_cuadrillas}"
-                f" · Horas por jornada: {he_horas_jornada}"
-                f" · Plan: {he_plan}", estilos["Normal"]
-            ),
-            Spacer(1, 0.25 * cm),
-            Paragraph(
-                f"Convocatorias: {he_total_convocatorias} · Horas-cuadrilla: {he_total_horas_cuadrilla}"
-                f" · Días con cobertura: {he_dias_con_cobertura}", estilos["Normal"]
-            ),
-            Spacer(1, 0.3 * cm),
-            Paragraph("Detalle diario", estilos["Heading2"]),
-        ]
-        datos_pdf = [["Fecha", "Día", "Requeridas", "Cuadrillas asignadas", "Horas-cuadrilla"]]
-        for fila in he_filas_calendario:
-            datos_pdf.append([
-                fila["Fecha"], fila["Día"], str(fila["Cuadrillas requeridas"]),
-                fila["Cuadrillas asignadas"], str(fila["Horas-cuadrilla del día"])
-            ])
-        tabla_pdf = Table(datos_pdf, repeatRows=1, colWidths=[2.3*cm, 2.0*cm, 2.0*cm, 14.5*cm, 2.7*cm])
-        tabla_pdf.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#263746")),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("FONTSIZE", (0,0), (-1,-1), 7),
-            ("GRID", (0,0), (-1,-1), 0.35, colors.grey),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF2F5")]),
-            ("LEFTPADDING", (0,0), (-1,-1), 4), ("RIGHTPADDING", (0,0), (-1,-1), 4),
-            ("TOPPADDING", (0,0), (-1,-1), 3), ("BOTTOMPADDING", (0,0), (-1,-1), 3),
-        ]))
-        historia.append(tabla_pdf)
-        historia += [Spacer(1, 0.35 * cm), Paragraph("Resumen por cuadrilla", estilos["Heading2"])]
-        resumen_pdf = [["Cuadrilla", "Convocatorias", "Horas extras acumuladas"]]
-        resumen_pdf += [[q, str(he_convocatorias[q]), str(he_horas_por_cuadrilla[q])] for q in he_nombres_cuadrillas]
-        tabla_resumen_pdf = Table(resumen_pdf, repeatRows=1, colWidths=[5*cm, 5*cm, 6*cm])
-        tabla_resumen_pdf.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#263746")),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("GRID", (0,0), (-1,-1), 0.35, colors.grey),
-            ("FONTSIZE", (0,0), (-1,-1), 8),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF2F5")]),
-        ]))
-        historia.append(tabla_resumen_pdf)
 
-        # Calendario mensual imprimible: un cuadro por mes, con cuadrillas asignadas y horas.
-        for anio_he_pdf, mes_he_pdf in he_meses:
-            historia.append(PageBreak())
-            historia.append(Paragraph(f"Calendario: {he_nombres_meses[mes_he_pdf - 1].capitalize()} de {anio_he_pdf}", estilo_titulo))
-            calendario_pdf = [[Paragraph(d, estilo_celda) for d in he_nombres_dias]]
-            semanas_pdf = calendar.monthcalendar(anio_he_pdf, mes_he_pdf)
+        historia = []
+        he_meses_pdf = sorted({(f.year, f.month) for f in he_fechas})
+        nombres_dias_pdf = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
+        for indice_mes, (anio_pdf, mes_pdf) in enumerate(he_meses_pdf):
+            if indice_mes > 0:
+                historia.append(PageBreak())
+
+            nombre_mes_pdf = he_nombres_meses[mes_pdf - 1].capitalize()
+            historia.append(Paragraph("Calendario de organización de cuadrillas", estilo_titulo))
+            historia.append(Paragraph(
+                f"{nombre_mes_pdf} de {anio_pdf} · Período general: "
+                f"{he_desde.strftime('%d/%m/%Y')} al {he_hasta.strftime('%d/%m/%Y')}",
+                estilo_periodo,
+            ))
+
+            calendario_pdf = [[
+                Paragraph(escape(dia), estilo_encabezado) for dia in nombres_dias_pdf
+            ]]
+            semanas_pdf = calendar.monthcalendar(anio_pdf, mes_pdf)
+
             for semana_pdf in semanas_pdf:
                 celdas = []
                 for dia_pdf in semana_pdf:
                     if dia_pdf == 0:
                         celdas.append("")
                         continue
-                    f_pdf = date(anio_he_pdf, mes_he_pdf, dia_pdf)
-                    if f_pdf < he_desde or f_pdf > he_hasta:
-                        contenido = str(dia_pdf)
-                    elif f_pdf.weekday() == 6:
-                        contenido = f"{dia_pdf}<br/>Domingo"
+
+                    fecha_pdf = date(anio_pdf, mes_pdf, dia_pdf)
+                    if fecha_pdf < he_desde or fecha_pdf > he_hasta:
+                        contenido = ""
+                    elif fecha_pdf.weekday() == 6:
+                        contenido = f"<b>{dia_pdf}</b><br/><font color='#777777'>Domingo</font>"
                     else:
-                        q_pdf_lista = he_asignaciones.get(f_pdf, [])
-                        horas_pdf_dia = len(q_pdf_lista) * he_horas_jornada
-                        contenido = f"{dia_pdf}<br/>{', '.join(q_pdf_lista) if q_pdf_lista else 'Sin asignación'}<br/>{horas_pdf_dia} h-cuadrilla"
+                        cuadrillas_pdf = he_asignaciones.get(fecha_pdf, [])
+                        nombres_pdf = "<br/>".join(escape(q) for q in cuadrillas_pdf)
+                        if not nombres_pdf:
+                            nombres_pdf = "<font color='#777777'>Sin asignación</font>"
+                        contenido = f"<b>{dia_pdf}</b><br/>{nombres_pdf}"
                     celdas.append(Paragraph(contenido, estilo_celda))
+
                 calendario_pdf.append(celdas)
-            tabla_cal_pdf = Table(calendario_pdf, colWidths=[3.8*cm]*7, rowHeights=[0.7*cm] + [2.1*cm]*len(semanas_pdf))
+
+            alto_fila = 2.65 * cm if len(semanas_pdf) >= 6 else 3.0 * cm
+            tabla_cal_pdf = Table(
+                calendario_pdf,
+                colWidths=[(27.7 / 7) * cm] * 7,
+                rowHeights=[0.75 * cm] + [alto_fila] * len(semanas_pdf),
+            )
             tabla_cal_pdf.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#263746")),
-                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-                ("ALIGN", (0,0), (-1,0), "CENTER"),
-                ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-                ("VALIGN", (0,0), (-1,-1), "TOP"),
-                ("LEFTPADDING", (0,0), (-1,-1), 4),
-                ("RIGHTPADDING", (0,0), (-1,-1), 4),
-                ("TOPPADDING", (0,0), (-1,-1), 4),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#263746")),
+                ("GRID", (0, 0), (-1, -1), 0.6, colors.HexColor("#9AA5AE")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]))
             historia.append(tabla_cal_pdf)
 
         doc.build(historia)
         return buffer_pdf.getvalue()
 
-    st.markdown("### Exportar esquema")
+    st.markdown("### Exportar calendario")
     try:
-        import calendar  # Se utiliza para construir los almanaques mensuales del PDF.
         he_pdf_bytes = generar_pdf_esquema_he()
         st.download_button(
-            "📄 Descargar esquema y calendario en PDF",
+            "📄 Descargar calendario de cuadrillas en PDF",
             data=he_pdf_bytes,
-            file_name=f"esquema_horas_extras_{he_desde.strftime('%Y%m%d')}_{he_hasta.strftime('%Y%m%d')}.pdf",
+            file_name=f"calendario_cuadrillas_{he_desde.strftime('%Y%m%d')}_{he_hasta.strftime('%Y%m%d')}.pdf",
             mime="application/pdf",
-            key="download_pdf_esquema_he"
+            key="download_pdf_esquema_he",
         )
     except Exception as e:
-        st.error(f"No se pudo generar el PDF: {e}")
+        st.error(f"No se pudo generar el PDF del calendario: {e}")
 
 
 # ============================================================
